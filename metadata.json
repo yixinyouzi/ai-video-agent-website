@@ -1,0 +1,6 @@
+{
+  "name": "VisionCraft AI",
+  "description": "AI 视频制作平台，支持图片轮播模式与 HTML 视频动画创作模式，提供分镜生成、旁白配音与录屏导出功能。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

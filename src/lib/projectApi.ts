@@ -1,0 +1,99 @@
+import { ApiChatMessageRecord, ApiProjectRecord, ApiSendMessageResult, ProjectMode } from '../types';
+
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || '';
+
+export async function createProject(input: {
+  mode: ProjectMode;
+  prompt: string;
+  title?: string;
+}): Promise<ApiProjectRecord> {
+  const response = await fetch(`${API_BASE_URL}/api/projects`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(input),
+  });
+
+  return parseProjectResponse(response);
+}
+
+export async function fetchProjects(): Promise<ApiProjectRecord[]> {
+  const response = await fetch(`${API_BASE_URL}/api/projects`);
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, '加载项目列表失败'));
+  }
+
+  const data = (await response.json()) as { projects?: ApiProjectRecord[] };
+  return data.projects ?? [];
+}
+
+export async function deleteProjectById(uuid: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/api/projects/${uuid}`, {
+    method: 'DELETE',
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, '删除项目失败'));
+  }
+}
+
+export async function fetchProjectMessages(projectUuid: string): Promise<ApiChatMessageRecord[]> {
+  const response = await fetch(`${API_BASE_URL}/api/projects/${projectUuid}/messages`);
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, '加载对话历史失败'));
+  }
+
+  const data = (await response.json()) as { messages?: ApiChatMessageRecord[] };
+  return data.messages ?? [];
+}
+
+export async function sendProjectMessage(input: {
+  projectUuid: string;
+  content: string;
+}): Promise<ApiSendMessageResult> {
+  const response = await fetch(`${API_BASE_URL}/api/projects/${input.projectUuid}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ content: input.content }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, '发送消息失败'));
+  }
+
+  const data = (await response.json()) as Partial<ApiSendMessageResult>;
+
+  if (!data.assistantMessage || !data.analysis || !data.project || data.outline === undefined) {
+    throw new Error('服务端没有返回完整的意图分析结果');
+  }
+
+  return data as ApiSendMessageResult;
+}
+
+async function parseProjectResponse(response: Response): Promise<ApiProjectRecord> {
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, '创建项目失败'));
+  }
+
+  const data = (await response.json()) as { project?: ApiProjectRecord };
+
+  if (!data.project) {
+    throw new Error('服务端没有返回项目数据');
+  }
+
+  return data.project;
+}
+
+async function getErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const data = (await response.json()) as { error?: string };
+    return data.error || fallback;
+  } catch {
+    return fallback;
+  }
+}
