@@ -1,7 +1,13 @@
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 
-const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const npmRunCommand =
+  process.env.npm_execpath && process.env.npm_execpath.endsWith('.js')
+    ? { command: process.execPath, prefixArgs: [process.env.npm_execpath] }
+    : {
+        command: process.platform === 'win32' ? 'cmd.exe' : 'npm',
+        prefixArgs: process.platform === 'win32' ? ['/d', '/s', '/c', 'npm.cmd'] : [],
+      };
 const defaultApiPort = Number(process.env.API_PORT ?? '3001');
 const defaultClientPort = Number(process.env.VITE_PORT ?? '3000');
 const apiPort = await findAvailablePort(defaultApiPort);
@@ -32,7 +38,7 @@ const children = [
 let shuttingDown = false;
 
 function runScript(scriptName, label, options = {}) {
-  const child = spawn(npmCommand, ['run', scriptName, ...(options.args ?? [])], {
+  const child = spawn(npmRunCommand.command, [...npmRunCommand.prefixArgs, 'run', scriptName, ...(options.args ?? [])], {
     stdio: 'inherit',
     env: options.env ?? process.env,
   });

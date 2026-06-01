@@ -1,17 +1,53 @@
-import React, { useState } from 'react';
-import { Sparkles, Image, Code, Play, ArrowRight, Video, Cpu, RefreshCw } from 'lucide-react';
-import { getDefaultPrompt } from '../lib/projectContent';
-import { ProjectMode } from '../types';
+import React, { useEffect, useState } from 'react';
+import { Sparkles, Image, Code, Play, ArrowRight, Video, Cpu, RefreshCw, History } from 'lucide-react';
+import { formatProjectCreatedAt, getDefaultPrompt } from '../lib/projectContent';
+import { fetchProjects } from '../lib/projectApi';
+import { ApiProjectRecord, ProjectMode } from '../types';
 
 interface HomeViewProps {
   onStartCreation: (mode: ProjectMode, prompt: string) => Promise<void>;
+  onOpenProject: (projectId: string) => void;
 }
 
-export default function HomeView({ onStartCreation }: HomeViewProps) {
+export default function HomeView({ onStartCreation, onOpenProject }: HomeViewProps) {
   const [selectedMode, setSelectedMode] = useState<ProjectMode>('slideshow');
   const [prompt, setPrompt] = useState('');
   const [isCreatingProject, setIsCreatingProject] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [projects, setProjects] = useState<ApiProjectRecord[]>([]);
+  const [isLoadingProjects, setIsLoadingProjects] = useState(true);
+  const [projectLoadError, setProjectLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isCurrent = true;
+
+    async function loadProjectHistory() {
+      try {
+        setIsLoadingProjects(true);
+        setProjectLoadError(null);
+        const records = await fetchProjects();
+
+        if (isCurrent) {
+          setProjects(records);
+        }
+      } catch (error) {
+        if (isCurrent) {
+          setProjectLoadError(error instanceof Error ? error.message : '加载项目历史失败');
+          setProjects([]);
+        }
+      } finally {
+        if (isCurrent) {
+          setIsLoadingProjects(false);
+        }
+      }
+    }
+
+    void loadProjectHistory();
+
+    return () => {
+      isCurrent = false;
+    };
+  }, []);
 
   const handleStart = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -212,8 +248,9 @@ export default function HomeView({ onStartCreation }: HomeViewProps) {
           </div>
         </div>
 
+        <div className="grid w-full max-w-5xl gap-5 lg:grid-cols-[minmax(0,1fr)_300px]">
         {/* Prompt Input Form */}
-        <form onSubmit={handleStart} className="w-full max-w-4xl bg-[#131b2e] border border-[#1e293b] rounded-2xl p-5 shadow-lg space-y-4">
+        <form onSubmit={handleStart} className="w-full bg-[#131b2e] border border-[#1e293b] rounded-2xl p-5 shadow-lg space-y-4">
           <div className="flex flex-col gap-1.5">
             <span className="text-xs font-mono text-[#ddb7ff] uppercase tracking-wider flex items-center gap-1.5">
               <Cpu className="w-3.5 h-3.5" />
@@ -263,6 +300,58 @@ export default function HomeView({ onStartCreation }: HomeViewProps) {
             </div>
           </div>
         </form>
+
+        <section className="flex min-h-[260px] flex-col rounded-2xl border border-[#1e293b] bg-[#131b2e] p-4 shadow-lg">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <History className="h-4 w-4 text-[#ddb7ff]" />
+              <span className="text-sm font-semibold text-white">历史记录</span>
+            </div>
+            {isLoadingProjects && <RefreshCw className="h-3.5 w-3.5 animate-spin text-[#ddb7ff]" />}
+          </div>
+
+          {projectLoadError ? (
+            <div className="rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">
+              {projectLoadError}
+            </div>
+          ) : projects.length > 0 ? (
+            <div className="custom-scrollbar flex-1 space-y-2 overflow-y-auto pr-1">
+              {projects.slice(0, 8).map((project) => (
+                <button
+                  key={project.uuid}
+                  type="button"
+                  onClick={() => onOpenProject(project.uuid)}
+                  className="group w-full rounded-xl border border-[#1e293b]/70 bg-[#0b1326] p-3 text-left transition-all hover:border-[#ddb7ff]/40 hover:bg-[#171f33]"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="truncate text-xs font-semibold text-slate-200 group-hover:text-[#ddb7ff]">
+                      {project.title}
+                    </span>
+                    <ArrowRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500 transition group-hover:translate-x-0.5 group-hover:text-[#ddb7ff]" />
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <span
+                      className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] ${
+                        project.type === 'slideshow'
+                          ? 'border-[#ddb7ff]/10 bg-[#ddb7ff]/5 text-[#ddb7ff]/70'
+                          : 'border-[#4cd7f6]/10 bg-[#4cd7f6]/5 text-[#4cd7f6]/70'
+                      }`}
+                    >
+                      {project.type === 'slideshow' ? <Video className="h-2.5 w-2.5" /> : <Code className="h-2.5 w-2.5" />}
+                      {project.type === 'slideshow' ? '图片轮播' : 'Web 动画'}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-[#cfc2d6]/55">{formatProjectCreatedAt(project.createdAt)}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-[#1e293b]/80 bg-[#0b1326]/60 px-4 text-center text-xs leading-relaxed text-[#cfc2d6]/65">
+              还没有历史记录，创建第一个对话后会出现在这里。
+            </div>
+          )}
+        </section>
+        </div>
       </main>
 
       {/* Footer copyright */}

@@ -18,6 +18,13 @@ export default function App() {
     setCurrentView('studio');
   };
 
+  const handleOpenProject = (projectId: string) => {
+    setSelectedMode(null);
+    setSelectedPrompt(null);
+    setSelectedProjectId(projectId);
+    setCurrentView('studio');
+  };
+
   const handleBackToHome = () => {
     setCurrentView('home');
     setSelectedMode(null);
@@ -28,7 +35,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#020617] text-[#dae2fd]">
       {currentView === 'home' ? (
-        <HomeView onStartCreation={handleStartCreation} />
+        <HomeView onStartCreation={handleStartCreation} onOpenProject={handleOpenProject} />
       ) : (
         <StudioView 
           initialProjectId={selectedProjectId}

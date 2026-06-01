@@ -1,46 +1,27 @@
-<div align="center">
-  <img
-    width="1200"
-    height="475"
-    alt="VisionCraft AI Banner"
-    src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png"
-  />
-</div>
-
 # VisionCraft AI
 
-VisionCraft AI 是一个 AI 视频创作工作台，支持两种创作模式：
+VisionCraft AI 是一个 AI 视频创作工作台，支持通过自然语言创建、管理和继续编辑视频项目。
+
+当前支持两种创作模式：
 
 - `slideshow`：图片轮播视频
 - `html`：HTML 网页动画视频
 
-当前项目已经打通了一条完整的“提示词 -> 意图识别 -> 视频大纲生成 -> 前端分镜展示”链路：
-
-- 首页创建视频项目
-- 项目与聊天消息写入 MySQL
-- AI 识别用户意图
-- AI 生成完整逐字稿和结构化分镜大纲
-- 创作页展示分镜卡片、旁白、提示词和完整大纲弹窗
-
-## 技术栈
-
-- 前端：React 19 + Vite + TypeScript + Tailwind CSS
-- 后端：Express + TypeScript
-- 数据库：MySQL
-- AI 调用：OpenAI SDK 兼容接口
+项目已经打通了“提示词 -> 意图识别 -> 视频大纲生成 -> 前端分镜展示 -> 历史对话继续编辑”的基础链路。
 
 ## 当前能力
 
-### 1. 项目管理
+### 项目管理
 
-- 创建项目
-- 删除项目
-- 读取历史项目列表
-- 加载项目聊天记录
+- 在首页创建新视频项目
+- 在首页直接查看历史记录，并点击进入已有项目
+- 在创作页左侧查看、切换和删除历史项目
+- 自动加载项目历史对话，不需要为了查看历史记录而新建对话
+- 项目和聊天消息写入 MySQL
 
-### 2. AI 聊天与意图识别
+### AI 对话与意图识别
 
-当前已接入这些动作识别：
+后端会识别用户在对话中的创作意图，目前支持：
 
 - `generate_video_outline`
 - `regenerate_video_outline`
@@ -49,14 +30,13 @@ VisionCraft AI 是一个 AI 视频创作工作台，支持两种创作模式：
 - `regenerate_scene`
 - `unsupported`
 
+### 视频大纲生成
 
-### 3. 视频大纲生成
-
-当用户意图被识别为生成大纲时，后端会调用 AI 返回结构化 JSON，内容包含：
+当用户意图被识别为生成或重新生成视频大纲时，后端会调用 AI 返回结构化 JSON，内容包括：
 
 - `summary`：视频整体概述
 - `fullScript`：完整逐字稿
-- `scenes`：6 到 30 个分镜
+- `scenes`：分镜列表
 
 每个分镜包含：
 
@@ -66,44 +46,60 @@ VisionCraft AI 是一个 AI 视频创作工作台，支持两种创作模式：
 - `visualPrompt`
 - `durationSeconds`
 
-不同模式下，`visualPrompt` 的生成策略不同：
+不同模式下，`visualPrompt` 的用途不同：
 
 - 图片轮播模式：生成图片提示词，供后续文生图使用
 - HTML 动画模式：生成网页动画提示词，供后续 HTML/CSS/SVG/Canvas 动画生成使用
 
-### 4. 创作页 UI
+### 创作页 UI
 
 - 左侧显示历史项目
-- 中间显示当前项目预览与分镜列表
+- 中间显示当前项目预览和分镜列表
 - 右侧显示 AI 对话面板
-- 中间预览区在没有大纲时保持空状态
-- 生成大纲后，按真实分镜动态渲染
+- 支持加载历史对话
 - 对话中的大纲结果会以卡片形式展示
 - 支持弹窗查看完整大纲内容
-- 右侧面板支持拖拽调整宽度，最大可接近 1:1
+- 右侧面板支持拖拽调整宽度
 - 主要文字内容支持复制
+
+## 最近更新
+
+- 首页新增“历史记录”面板，可以直接打开已有项目查看历史对话。
+- 点击首页历史项目时只进入已有项目，不会创建新对话。
+- 首页历史记录文案统一为简体中文 UTF-8。
+- 修复 Windows 环境下 `npm run dev` 可能因为直接 spawn `npm.cmd` 出现 `spawn EINVAL` 的问题。
+
+## 技术栈
+
+- 前端：React 19 + Vite + TypeScript + Tailwind CSS
+- 后端：Express + TypeScript
+- 数据库：MySQL
+- AI 调用：OpenAI SDK 兼容接口
 
 ## 项目结构
 
 ```text
 .
-├── server/                # Express API、AI 调用、数据库读写
-├── shared/                # 前后端共享类型
-├── src/                   # React 前端
-├── sql/                   # 建表 SQL
-├── scripts/               # 本地开发脚本
+├── server/        # Express API、AI 调用、数据库读写
+├── shared/        # 前后端共享类型和解析逻辑
+├── src/           # React 前端
+├── sql/           # 建表 SQL
+├── scripts/       # 本地开发脚本
 ├── package.json
 └── README.md
 ```
 
-几个关键文件：
+关键文件：
 
-- [server/index.ts](/home/yixinyou/ai-programming-projects/ai-video-agent/server/index.ts:1)：API 入口
-- [server/chatService.ts](/home/yixinyou/ai-programming-projects/ai-video-agent/server/chatService.ts:1)：聊天动作路由
-- [server/videoOutlineService.ts](/home/yixinyou/ai-programming-projects/ai-video-agent/server/videoOutlineService.ts:1)：视频大纲生成
-- [server/intentAnalysis.ts](/home/yixinyou/ai-programming-projects/ai-video-agent/server/intentAnalysis.ts:1)：用户意图识别
-- [shared/storyboardOutline.ts](/home/yixinyou/ai-programming-projects/ai-video-agent/shared/storyboardOutline.ts:1)：大纲共享结构
-- [src/components/StudioView.tsx](/home/yixinyou/ai-programming-projects/ai-video-agent/src/components/StudioView.tsx:1)：创作页主界面
+- `src/App.tsx`：首页和创作页切换逻辑
+- `src/components/HomeView.tsx`：首页、新建项目入口、历史记录入口
+- `src/components/StudioView.tsx`：创作页主界面
+- `src/lib/projectApi.ts`：前端 API 调用封装
+- `server/index.ts`：Express API 入口
+- `server/chatService.ts`：聊天动作处理
+- `server/videoOutlineService.ts`：视频大纲生成
+- `server/intentAnalysis.ts`：用户意图识别
+- `shared/storyboardOutline.ts`：大纲共享结构和解析逻辑
 
 ## 本地运行
 
@@ -144,13 +140,13 @@ MYSQL_CONNECTION_LIMIT=10
 
 说明：
 
-- `OPENAI_BASE_URL` 支持任意 OpenAI SDK 兼容网关
-- `VITE_API_BASE_URL` 为空时，前端默认走本地 `/api` 代理
-- `npm run dev` 会自动寻找可用端口，如果 `3001` 被占用，会自动换到下一个空闲端口，并同步更新前端代理
+- `OPENAI_BASE_URL` 支持任意 OpenAI SDK 兼容网关。
+- `VITE_API_BASE_URL` 为空时，前端默认走本地 `/api` 代理。
+- `npm run dev` 会自动寻找可用端口。如果 `3001` 被占用，会自动换到下一个空闲端口，并同步更新前端代理目标。
 
 ### 4. 初始化数据库
 
-执行 [sql/project.sql](/home/yixinyou/ai-programming-projects/ai-video-agent/sql/project.sql:1) 中的建表语句。
+执行 `sql/project.sql` 中的建表语句。
 
 ### 5. 启动开发环境
 
@@ -177,8 +173,8 @@ npm run dev:client
 
 如果端口被占用：
 
-- `npm run dev` 会自动换端口
-- `npm run dev:server` 会提示你修改 `API_PORT`
+- `npm run dev` 会自动切换端口。
+- `npm run dev:server` 会提示修改 `API_PORT`。
 
 ## 可用脚本
 
@@ -218,5 +214,51 @@ npm run lint
 - `project`
 - `project_chat_message`
 
-其中 `project.storyboard_outline` 会保存结构化的大纲 JSON 字符串。
+其中 `project.storyboard_outline` 会保存结构化的视频大纲 JSON 字符串。
 
+## 上传到 GitHub
+
+当前远程仓库地址已经配置为：
+
+```bash
+https://github.com/yixinyouzi/ai-video-agent-website.git
+```
+
+### 发布步骤
+
+检查当前改动：
+
+```bash
+git status
+```
+
+确认构建无误：
+
+```bash
+npm run lint
+npm run build
+```
+
+添加本次需要提交的文件：
+
+```bash
+git add README.md scripts/dev.mjs src/App.tsx src/components/HomeView.tsx
+```
+
+如果你确认 `.env.example` 和 `package-lock.json` 的改动也需要上传，可以一并加入：
+
+```bash
+git add .env.example package-lock.json
+```
+
+提交：
+
+```bash
+git commit -m "feat: add home history access"
+```
+
+推送到 GitHub：
+
+```bash
+git push origin main
+```
