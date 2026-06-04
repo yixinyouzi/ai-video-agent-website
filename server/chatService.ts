@@ -144,6 +144,7 @@ function buildOutlineReply(outline: StoryboardOutline, reason: string): string {
     `已完成视频大纲生成，共拆分 ${outline.scenes.length} 个分镜。`,
     `识别理由：${reason}`,
     `视频概述：${outline.summary}`,
+    ...(outline.globalImageStylePrompt ? [`全局图像风格：${outline.globalImageStylePrompt}`] : []),
   ].join('\n');
 }
 

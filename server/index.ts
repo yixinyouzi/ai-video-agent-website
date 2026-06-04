@@ -4,6 +4,7 @@ import { listProjectMessages } from './chatRepository';
 import { handleProjectChatMessage } from './chatService';
 import { createProject, deleteProject, getProjectByUuid, listProjects } from './projectRepository';
 import { ProjectMode } from './projectUtils';
+import { generateStoryboardAudio } from './storyboardAudioService';
 import { generateStoryboardImage, getProjectImagePath } from './storyboardImageService';
 
 dotenv.config();
@@ -145,6 +146,46 @@ app.post('/api/projects/:uuid/storyboard-images', async (req, res) => {
       `[storyboard-image] Generation failed project=${req.params.uuid} scene=${req.body?.sceneNumber}:`,
       error,
     );
+    res.status(500).json({ error: getErrorMessage(error) });
+  }
+});
+
+app.post('/api/projects/:uuid/storyboard-audio', async (req, res) => {
+  const abortController = new AbortController();
+  req.on('aborted', () => abortController.abort());
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      abortController.abort();
+    }
+  });
+
+  try {
+    const sceneNumber = Number(req.body?.sceneNumber);
+    if (!Number.isInteger(sceneNumber) || sceneNumber <= 0) {
+      res.status(400).json({ error: 'Valid sceneNumber is required.' });
+      return;
+    }
+
+    console.log(`[storyboard-audio] Request received project=${req.params.uuid} scene=${sceneNumber}`);
+    const project = await getProjectByUuid(req.params.uuid);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+
+    const result = await generateStoryboardAudio({
+      project,
+      sceneNumber,
+      signal: abortController.signal,
+    });
+    res.status(201).json(result);
+  } catch (error) {
+    if (abortController.signal.aborted) {
+      console.warn(`[storyboard-audio] Generation aborted project=${req.params.uuid} scene=${req.body?.sceneNumber}`);
+      return;
+    }
+
+    console.error(`[storyboard-audio] Generation failed project=${req.params.uuid} scene=${req.body?.sceneNumber}:`, error);
     res.status(500).json({ error: getErrorMessage(error) });
   }
 });

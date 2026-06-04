@@ -48,6 +48,10 @@ function buildSystemPrompt(mode: StoryboardProjectMode): string {
           '所有分镜的 visualPrompt 必须使用简体中文撰写，不得使用英文句子；专业术语也尽量使用中文表达。',
           'visualPrompt 必须是一段可直接用于文生图模型的中文画面提示词。',
           '当前模式是“图片轮播视频”。',
+          '在完成 fullScript 后，先根据完整脚本的主题、时代、情绪和叙事类型，选择最适合整支视频的一套统一图像风格。',
+          '将统一风格写入 globalImageStylePrompt，使用简体中文描述整体艺术风格、色彩系统、光影、材质、画面质感、镜头语言和人物一致性要求。',
+          'globalImageStylePrompt 应是一组可复用的全局图像风格提示词，建议 80 到 300 个中文字符，不要包含某个分镜独有的主体、动作或场景。',
+          '每个分镜的 visualPrompt 必须以完整的 globalImageStylePrompt 开头，再补充该分镜独有的主体、动作、场景和构图内容。',
           '每个分镜的 visualPrompt 必须是图片生成提示词，用于后续文生图。',
           '提示词要描述主体、构图、镜头、光线、风格、环境、材质和氛围。',
           '不要写成网页、代码、动画分镜语言，不要出现 HTML、CSS、SVG、Canvas、JS 等词。',
@@ -72,8 +76,9 @@ function buildSystemPrompt(mode: StoryboardProjectMode): string {
    - durationSeconds：该分镜建议时长，取 3 到 12 秒之间的整数
 4. summary 需要用 1 到 2 句话概括整支视频的叙事方向与视觉基调。
 5. scenes 的 narration 必须覆盖并拆分 fullScript 的主要内容，不能只写关键词。
-6. 只输出 JSON，不要输出 Markdown，不要输出任何额外说明。
-7. 返回 JSON 必须严格符合这个结构：
+6. 图片轮播模式必须生成 globalImageStylePrompt；HTML 动画模式将其设置为空字符串。
+7. 只输出 JSON，不要输出 Markdown，不要输出任何额外说明。
+8. 返回 JSON 必须严格符合这个结构：
 {
   "version": 1,
   "mode": "${mode}",
@@ -81,6 +86,7 @@ function buildSystemPrompt(mode: StoryboardProjectMode): string {
   "summary": "string",
   "fullScript": "string",
   "visualPromptType": "${mode === 'slideshow' ? 'image' : 'html_animation'}",
+  "globalImageStylePrompt": "${mode === 'slideshow' ? '根据完整视频脚本选择的全局中文图像风格提示词' : ''}",
   "scenes": [
     {
       "sceneNumber": 1,
@@ -142,10 +148,37 @@ function parseGeneratedOutline(
   }
 
   if (expectedMode === 'slideshow') {
+    const globalImageStylePrompt = outline.globalImageStylePrompt?.trim();
+    if (!globalImageStylePrompt || !containsChineseText(globalImageStylePrompt)) {
+      throw new Error('Slideshow outline globalImageStylePrompt must be written in Chinese.');
+    }
+    if (globalImageStylePrompt.length > 600) {
+      throw new Error('Slideshow outline globalImageStylePrompt must not exceed 600 characters.');
+    }
+
     const nonChineseScene = outline.scenes.find((scene) => !containsChineseText(scene.visualPrompt));
     if (nonChineseScene) {
       throw new Error(`Scene ${nonChineseScene.sceneNumber} image prompt must be written in Chinese.`);
     }
+
+    const scenes = outline.scenes.map((scene) => {
+      const visualPrompt = prefixGlobalImageStyle(globalImageStylePrompt, scene.visualPrompt);
+      if (visualPrompt.length > 2000) {
+        throw new Error(`Scene ${scene.sceneNumber} image prompt exceeds the 2000-character limit after adding global style.`);
+      }
+
+      return {
+        ...scene,
+        visualPrompt,
+      };
+    });
+
+    return {
+      ...outline,
+      userPrompt: expectedPrompt.trim() || outline.userPrompt,
+      globalImageStylePrompt,
+      scenes,
+    };
   }
 
   const normalizedPrompt = expectedPrompt.trim();
@@ -157,4 +190,16 @@ function parseGeneratedOutline(
 
 function containsChineseText(value: string): boolean {
   return /[\u3400-\u9fff]/.test(value);
+}
+
+function prefixGlobalImageStyle(globalStyle: string, scenePrompt: string): string {
+  const normalizedScenePrompt = scenePrompt.trim();
+  if (
+    normalizedScenePrompt.startsWith(globalStyle) ||
+    normalizedScenePrompt.startsWith(`全局风格要求：${globalStyle}`)
+  ) {
+    return normalizedScenePrompt;
+  }
+
+  return `全局风格要求：${globalStyle}\n分镜画面内容：${normalizedScenePrompt}`;
 }

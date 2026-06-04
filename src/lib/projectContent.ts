@@ -165,6 +165,8 @@ function mapScenesFromOutline(outline: StoryboardOutline, videoSource: ProjectVi
       visualPrompt: scene.visualPrompt,
       imageUrl: source?.url ?? null,
       imagePath: source?.path ?? null,
+      audioUrl: source?.audio?.url ?? null,
+      audioPath: source?.audio?.path ?? null,
       duration: scene.durationSeconds,
       startTime,
       endTime,

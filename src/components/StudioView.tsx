@@ -21,14 +21,16 @@ import {
   Subtitles,
   Trash2,
   Video,
+  Volume2,
 } from 'lucide-react';
 import { StoryboardOutline } from '../../shared/storyboardOutline';
-import { ChatMessage, Project, ProjectMode } from '../types';
+import { ApiProjectRecord, ChatMessage, Project, ProjectMode } from '../types';
 import {
   createProject as createProjectApi,
   deleteProjectById,
   fetchProjectMessages,
   fetchProjects,
+  generateStoryboardAudio,
   generateStoryboardImage,
   sendProjectMessage,
 } from '../lib/projectApi';
@@ -76,7 +78,9 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   const [imageGenerationStatus, setImageGenerationStatus] = useState('');
   const [imageGenerationError, setImageGenerationError] = useState(false);
   const [currentGeneratingSceneNumber, setCurrentGeneratingSceneNumber] = useState<number | null>(null);
+  const [currentGenerationPhase, setCurrentGenerationPhase] = useState<'image' | 'audio' | null>(null);
   const [imageGenerationProgress, setImageGenerationProgress] = useState({ completed: 0, total: 0 });
+  const [playingAudioSceneNumber, setPlayingAudioSceneNumber] = useState<number | null>(null);
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newProjTitle, setNewProjTitle] = useState('');
@@ -90,6 +94,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   const dragStartRef = useRef<{ x: number; width: number } | null>(null);
   const playerTimerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
   const imageGenerationAbortRef = useRef<AbortController | null>(null);
+  const narrationAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const activeProject = projects.find((project) => project.isActive) || projects[0] || null;
   const totalDuration = useMemo(
@@ -288,15 +293,56 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
     setPlaybackTime(activeProject.scenes[index].startTime);
   };
 
+  const handleNarrationAudioClick = (sceneNumber: number, audioUrl: string, event: React.MouseEvent) => {
+    event.stopPropagation();
+
+    if (playingAudioSceneNumber === sceneNumber && narrationAudioRef.current) {
+      narrationAudioRef.current.pause();
+      narrationAudioRef.current.currentTime = 0;
+      narrationAudioRef.current = null;
+      setPlayingAudioSceneNumber(null);
+      return;
+    }
+
+    narrationAudioRef.current?.pause();
+    const audio = new Audio(audioUrl);
+    narrationAudioRef.current = audio;
+    setPlayingAudioSceneNumber(sceneNumber);
+    audio.addEventListener('ended', () => {
+      narrationAudioRef.current = null;
+      setPlayingAudioSceneNumber(null);
+    }, { once: true });
+    void audio.play().catch((error) => {
+      narrationAudioRef.current = null;
+      setPlayingAudioSceneNumber(null);
+      console.error('[storyboard-audio] Playback failed', error);
+    });
+  };
+
+  const applyGeneratedProjectRecord = (projectId: string, record: ApiProjectRecord) => {
+    const refreshedProject = createProjectFromRecord(record, { isActive: true });
+    setProjects((previousProjects) =>
+      previousProjects.map((project) =>
+        project.id === projectId
+          ? {
+              ...refreshedProject,
+              isActive: true,
+              messages: project.messages,
+            }
+          : project,
+      ),
+    );
+  };
+
   const handleGenerateAllStoryboardImages = async () => {
     if (!activeProject || !canGenerateStoryboardImages || isGeneratingImages) {
       return;
     }
 
     const projectId = activeProject.id;
-    const scenesToGenerate = activeProject.scenes.filter((scene) => !scene.imageUrl);
+    const scenesToGenerate = activeProject.scenes.filter((scene) => !scene.imageUrl || !scene.audioUrl);
     if (scenesToGenerate.length === 0) {
-      setImageGenerationStatus('所有分镜画面已生成');
+      setImageGenerationStatus('所有分镜画面和旁白音频已生成');
       setImageGenerationError(false);
       return;
     }
@@ -306,8 +352,8 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
     setIsGeneratingImages(true);
     setImageGenerationError(false);
     setImageGenerationProgress({ completed: 0, total: scenesToGenerate.length });
-    setImageGenerationStatus(`已开始生成，共 ${scenesToGenerate.length} 个分镜画面`);
-    console.info(`[storyboard-image] Starting batch project=${projectId} scenes=${scenesToGenerate.length}`);
+    setImageGenerationStatus(`已开始生成，共 ${scenesToGenerate.length} 个分镜资源`);
+    console.info(`[storyboard-assets] Starting batch project=${projectId} scenes=${scenesToGenerate.length}`);
 
     try {
       for (let index = 0; index < scenesToGenerate.length; index += 1) {
@@ -317,36 +363,49 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
         }
 
         setCurrentGeneratingSceneNumber(scene.sceneNumber);
-        setImageGenerationStatus(`正在生成 ${index + 1}/${scenesToGenerate.length}：Scene ${scene.sceneNumber}`);
-        console.info(`[storyboard-image] Generating scene=${scene.sceneNumber}`);
-        const result = await generateStoryboardImage({
-          projectUuid: projectId,
-          sceneNumber: scene.sceneNumber,
-          signal: abortController.signal,
-        });
-        const refreshedProject = createProjectFromRecord(result.project, {
-          isActive: true,
-        });
+        let latestProjectRecord: ApiProjectRecord | null = null;
+        if (!scene.imageUrl) {
+          setCurrentGenerationPhase('image');
+          setImageGenerationStatus(`正在生成画面 ${index + 1}/${scenesToGenerate.length}：Scene ${scene.sceneNumber}`);
+          console.info(`[storyboard-image] Generating scene=${scene.sceneNumber}`);
+          const imageResult = await generateStoryboardImage({
+            projectUuid: projectId,
+            sceneNumber: scene.sceneNumber,
+            signal: abortController.signal,
+          });
+          latestProjectRecord = imageResult.project;
+          applyGeneratedProjectRecord(projectId, imageResult.project);
+          console.info(`[storyboard-image] Completed scene=${scene.sceneNumber} skipped=${imageResult.skipped}`);
+        }
 
-        setProjects((previousProjects) =>
-          previousProjects.map((project) =>
-            project.id === projectId
-              ? {
-                  ...refreshedProject,
-                  isActive: true,
-                  messages: project.messages,
-                }
-              : project,
-          ),
-        );
+        if (abortController.signal.aborted) {
+          break;
+        }
+
+        if (!scene.audioUrl) {
+          setCurrentGenerationPhase('audio');
+          setImageGenerationStatus(`正在生成旁白 ${index + 1}/${scenesToGenerate.length}：Scene ${scene.sceneNumber}`);
+          console.info(`[storyboard-audio] Generating scene=${scene.sceneNumber}`);
+          const audioResult = await generateStoryboardAudio({
+            projectUuid: projectId,
+            sceneNumber: scene.sceneNumber,
+            signal: abortController.signal,
+          });
+          latestProjectRecord = audioResult.project;
+          applyGeneratedProjectRecord(projectId, audioResult.project);
+          console.info(`[storyboard-audio] Completed scene=${scene.sceneNumber} skipped=${audioResult.skipped}`);
+        }
+
+        if (!latestProjectRecord) {
+          continue;
+        }
         setImageGenerationProgress({ completed: index + 1, total: scenesToGenerate.length });
-        console.info(`[storyboard-image] Completed scene=${scene.sceneNumber} skipped=${result.skipped}`);
       }
 
-      setImageGenerationStatus(abortController.signal.aborted ? '已中断生成，已完成的图片已保存' : '分镜画面生成完成');
+      setImageGenerationStatus(abortController.signal.aborted ? '已中断生成，已完成的资源已保存' : '分镜画面和旁白音频生成完成');
     } catch (error) {
       if (error instanceof DOMException && error.name === 'AbortError') {
-        setImageGenerationStatus('已中断生成，已完成的图片已保存');
+        setImageGenerationStatus('已中断生成，已完成的资源已保存');
         return;
       }
 
@@ -359,6 +418,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
       }
       setIsGeneratingImages(false);
       setCurrentGeneratingSceneNumber(null);
+      setCurrentGenerationPhase(null);
     }
   };
 
@@ -368,12 +428,16 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   };
 
   const selectProject = (projectId: string) => {
+    narrationAudioRef.current?.pause();
+    narrationAudioRef.current = null;
+    setPlayingAudioSceneNumber(null);
     imageGenerationAbortRef.current?.abort();
     imageGenerationAbortRef.current = null;
     setIsGeneratingImages(false);
     setImageGenerationStatus('');
     setImageGenerationError(false);
     setCurrentGeneratingSceneNumber(null);
+    setCurrentGenerationPhase(null);
     setImageGenerationProgress({ completed: 0, total: 0 });
     setActiveProjectId(projectId);
     setProjects((previousProjects) =>
@@ -1059,10 +1123,17 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                     const isActive = index === activeSceneIndex;
 
                     return (
-                      <button
+                      <div
                         key={scene.id}
-                        type="button"
+                        role="button"
+                        tabIndex={0}
                         onClick={() => handleSceneCardClick(index)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            handleSceneCardClick(index);
+                          }
+                        }}
                         className={`flex w-72 shrink-0 flex-col overflow-hidden rounded-xl border text-left transition-all duration-300 ${
                           isActive
                             ? 'translate-y-[-2px] border-[#ddb7ff] bg-[#171f33] shadow-[0_0_15px_rgba(221,183,255,0.15)]'
@@ -1082,7 +1153,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                             <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#050816]/70">
                               <div className="flex items-center gap-2 rounded-lg border border-[#ddb7ff]/30 bg-[#131b2e]/90 px-3 py-2 text-[11px] text-[#ddb7ff]">
                                 <RefreshCw className="h-3.5 w-3.5 animate-spin" />
-                                正在生成画面
+                                {currentGenerationPhase === 'audio' ? '正在生成旁白' : '正在生成画面'}
                               </div>
                             </div>
                           )}
@@ -1090,9 +1161,24 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                             <span className={`text-[10px] font-bold ${isActive ? 'text-[#ddb7ff]' : 'text-slate-300'}`}>
                               SCENE {String(scene.sceneNumber).padStart(2, '0')}
                             </span>
-                            <span className="rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider text-slate-300">
-                              {scene.duration}s
-                            </span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider text-slate-300">
+                                {scene.duration}s
+                              </span>
+                              <button
+                                type="button"
+                                disabled={!scene.audioUrl}
+                                onClick={(event) => scene.audioUrl && handleNarrationAudioClick(scene.sceneNumber, scene.audioUrl, event)}
+                                className={`flex h-6 w-6 items-center justify-center rounded-md border bg-black/35 transition ${
+                                  scene.audioUrl
+                                    ? 'cursor-pointer border-orange-400/40 text-orange-400 hover:bg-orange-400/15'
+                                    : 'cursor-not-allowed border-white/10 text-slate-500'
+                                }`}
+                                title={scene.audioUrl ? '播放分镜旁白' : '旁白音频尚未生成'}
+                              >
+                                <Volume2 className={`h-3.5 w-3.5 ${playingAudioSceneNumber === scene.sceneNumber ? 'animate-pulse' : ''}`} />
+                              </button>
+                            </div>
                           </div>
                           <h3 className="relative mt-3 line-clamp-1 text-sm font-semibold text-white">{scene.title}</h3>
                           <p className="relative mt-2 line-clamp-2 text-[11px] leading-5 text-slate-300">{scene.narration}</p>
@@ -1103,7 +1189,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                           </div>
                           <p className="line-clamp-3 text-[11px] leading-5 text-slate-400">{scene.visualPrompt}</p>
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -1309,6 +1395,15 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
             </div>
 
             <div className="custom-scrollbar flex-1 overflow-y-auto px-6 py-5">
+              {expandedOutline.globalImageStylePrompt && (
+                <div className="mb-6 border-l-2 border-orange-400 bg-orange-400/5 px-5 py-4">
+                  <div className="mb-2 text-xs font-mono uppercase tracking-[0.24em] text-orange-300">全局图像风格</div>
+                  <p className="select-text whitespace-pre-wrap text-sm leading-7 text-slate-300">
+                    {expandedOutline.globalImageStylePrompt}
+                  </p>
+                </div>
+              )}
+
               <div className="mb-6 rounded-2xl border border-[#1e293b] bg-[#101827] p-5">
                 <div className="mb-2 text-xs font-mono uppercase tracking-[0.24em] text-[#4cd7f6]">完整逐字稿</div>
                 <p className="select-text whitespace-pre-wrap text-sm leading-7 text-slate-300">{expandedOutline.fullScript}</p>
@@ -1468,6 +1563,11 @@ function OutlineCard({ outline, onOpen }: { outline: StoryboardOutline; onOpen: 
       <div className="border-b border-[#1e293b]/70 px-4 py-3">
         <div className="mb-1 text-[10px] font-mono uppercase tracking-[0.24em] text-[#ddb7ff]">视频大纲</div>
         <p className="select-text whitespace-pre-wrap text-[11px] leading-6 text-slate-300">{outline.summary}</p>
+        {outline.globalImageStylePrompt && (
+          <p className="mt-2 line-clamp-2 select-text text-[11px] leading-5 text-orange-200/80">
+            全局图像风格：{outline.globalImageStylePrompt}
+          </p>
+        )}
       </div>
 
       <div className="overflow-x-auto">

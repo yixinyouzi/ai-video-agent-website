@@ -111,7 +111,10 @@ export async function generateStoryboardImage(input: {
     ...videoSource,
     scenes: {
       ...videoSource.scenes,
-      [String(input.sceneNumber)]: image,
+      [String(input.sceneNumber)]: {
+        ...(existingImage ?? {}),
+        ...image,
+      },
     },
   };
   const updatedProject = await updateProjectVideoSource(input.project.uuid, JSON.stringify(nextVideoSource, null, 2));

@@ -15,6 +15,7 @@ export interface StoryboardOutline {
   summary: string;
   fullScript: string;
   visualPromptType: 'image' | 'html_animation';
+  globalImageStylePrompt?: string;
   scenes: StoryboardScene[];
 }
 
@@ -48,6 +49,7 @@ export function isStoryboardOutline(value: unknown): value is StoryboardOutline 
     typeof candidate.summary === 'string' &&
     typeof candidate.fullScript === 'string' &&
     (candidate.visualPromptType === 'image' || candidate.visualPromptType === 'html_animation') &&
+    (candidate.globalImageStylePrompt === undefined || typeof candidate.globalImageStylePrompt === 'string') &&
     Array.isArray(candidate.scenes) &&
     candidate.scenes.every(isStoryboardScene)
   );

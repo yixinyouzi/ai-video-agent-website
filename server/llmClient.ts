@@ -14,6 +14,20 @@ export function getOpenAIClient(): OpenAI {
   return openAIClient;
 }
 
+export function getOpenAITtsClient(): OpenAI {
+  if (openAITtsClient) {
+    return openAITtsClient;
+  }
+
+  openAITtsClient = new OpenAI({
+    apiKey: process.env.OPENAI_TTS_API_KEY?.trim() || getLlmApiKey(),
+    baseURL: (process.env.OPENAI_TTS_BASE_URL?.trim() || getLlmBaseUrl()).replace(/\/+$/, ''),
+    timeout: getTtsTimeoutMs(),
+  });
+
+  return openAITtsClient;
+}
+
 export function getLlmModel(): string {
   return process.env.OPENAI_MODEL?.trim() || 'gemini-3-flash-preview';
 }
@@ -51,4 +65,10 @@ function getLlmTimeoutMs(): number {
   return Number.isFinite(timeout) && timeout > 0 ? timeout : 30000;
 }
 
+function getTtsTimeoutMs(): number {
+  const timeout = Number(process.env.OPENAI_TTS_TIMEOUT_MS || process.env.OPENAI_TIMEOUT_MS || '60000');
+  return Number.isFinite(timeout) && timeout > 0 ? timeout : 60000;
+}
+
 let openAIClient: OpenAI | null = null;
+let openAITtsClient: OpenAI | null = null;

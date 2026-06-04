@@ -1,5 +1,6 @@
 import {
   ApiChatMessageRecord,
+  ApiGenerateStoryboardAudioResult,
   ApiGenerateStoryboardImageResult,
   ApiProjectRecord,
   ApiSendMessageResult,
@@ -106,6 +107,32 @@ export async function generateStoryboardImage(input: {
   }
 
   return data as ApiGenerateStoryboardImageResult;
+}
+
+export async function generateStoryboardAudio(input: {
+  projectUuid: string;
+  sceneNumber: number;
+  signal?: AbortSignal;
+}): Promise<ApiGenerateStoryboardAudioResult> {
+  const response = await fetch(`${API_BASE_URL}/api/projects/${input.projectUuid}/storyboard-audio`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ sceneNumber: input.sceneNumber }),
+    signal: input.signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, '生成分镜旁白失败'));
+  }
+
+  const data = (await response.json()) as Partial<ApiGenerateStoryboardAudioResult>;
+  if (!data.project || !data.audio || typeof data.sceneNumber !== 'number') {
+    throw new Error('服务端没有返回完整的分镜旁白信息');
+  }
+
+  return data as ApiGenerateStoryboardAudioResult;
 }
 
 async function parseProjectResponse(response: Response): Promise<ApiProjectRecord> {

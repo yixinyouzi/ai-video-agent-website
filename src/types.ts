@@ -18,6 +18,8 @@ export interface Scene {
   visualPrompt: string;
   imageUrl?: string | null;
   imagePath?: string | null;
+  audioUrl?: string | null;
+  audioPath?: string | null;
   duration: number; // in seconds
   startTime: number;
   endTime: number;
@@ -93,6 +95,15 @@ export interface StoryboardImageSource {
   url: string;
   prompt: string;
   generatedAt: string;
+  audio?: StoryboardAudioSource;
+}
+
+export interface StoryboardAudioSource {
+  path: string;
+  url: string;
+  narration: string;
+  voice: string;
+  generatedAt: string;
 }
 
 export interface ProjectVideoSource {
@@ -105,5 +116,12 @@ export interface ApiGenerateStoryboardImageResult {
   project: ApiProjectRecord;
   sceneNumber: number;
   image: StoryboardImageSource;
+  skipped: boolean;
+}
+
+export interface ApiGenerateStoryboardAudioResult {
+  project: ApiProjectRecord;
+  sceneNumber: number;
+  audio: StoryboardAudioSource;
   skipped: boolean;
 }
