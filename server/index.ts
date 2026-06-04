@@ -1,11 +1,13 @@
 import dotenv from 'dotenv';
 import express from 'express';
 import { listProjectMessages } from './chatRepository';
-import { handleProjectChatMessage } from './chatService';
-import { createProject, deleteProject, getProjectByUuid, listProjects } from './projectRepository';
+import { confirmRegenerateVideoOutline, handleProjectChatMessage } from './chatService';
+import { createProject, deleteProject, getProjectByUuid, listProjects, updateProjectVideoSource } from './projectRepository';
+import { isHtmlVideoStyleId } from '../shared/htmlVideoStyles';
 import { ProjectMode } from './projectUtils';
 import { generateStoryboardAudio } from './storyboardAudioService';
 import { generateStoryboardImage, getProjectImagePath } from './storyboardImageService';
+import { generateStoryboardHtml } from './storyboardHtmlService';
 
 dotenv.config();
 
@@ -102,6 +104,41 @@ app.post('/api/projects/:uuid/messages', async (req, res) => {
   }
 });
 
+app.post('/api/projects/:uuid/regenerate-outline-confirmations/:messageUuid', async (req, res) => {
+  try {
+    const result = await confirmRegenerateVideoOutline({
+      projectUuid: req.params.uuid,
+      confirmationMessageUuid: req.params.messageUuid,
+    });
+    res.status(201).json(result);
+  } catch (error) {
+    const message = getErrorMessage(error);
+    res.status(message.includes('已过期') ? 409 : 500).json({ error: message });
+  }
+});
+
+app.put('/api/projects/:uuid/html-style', async (req, res) => {
+  try {
+    const project = await getProjectByUuid(req.params.uuid);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+    if (project.type !== 'html' || !isHtmlVideoStyleId(req.body?.styleId)) {
+      res.status(400).json({ error: 'A valid HTML video style is required.' });
+      return;
+    }
+    const currentSource = parseVideoSource(project.videoSource);
+    const updatedProject = await updateProjectVideoSource(
+      project.uuid,
+      JSON.stringify({ ...currentSource, htmlStyleId: req.body.styleId }, null, 2),
+    );
+    res.json({ project: updatedProject });
+  } catch (error) {
+    res.status(500).json({ error: getErrorMessage(error) });
+  }
+});
+
 app.post('/api/projects/:uuid/storyboard-images', async (req, res) => {
   const abortController = new AbortController();
   req.on('aborted', () => {
@@ -147,6 +184,38 @@ app.post('/api/projects/:uuid/storyboard-images', async (req, res) => {
       `[storyboard-image] Generation failed project=${req.params.uuid} scene=${req.body?.sceneNumber}:`,
       error,
     );
+    res.status(500).json({ error: getErrorMessage(error) });
+  }
+});
+
+app.post('/api/projects/:uuid/storyboard-html', async (req, res) => {
+  const abortController = new AbortController();
+  req.on('aborted', () => abortController.abort());
+  res.on('close', () => {
+    if (!res.writableEnded) abortController.abort();
+  });
+
+  try {
+    const sceneNumber = Number(req.body?.sceneNumber);
+    if (!Number.isInteger(sceneNumber) || sceneNumber <= 0) {
+      res.status(400).json({ error: 'Valid sceneNumber is required.' });
+      return;
+    }
+    const project = await getProjectByUuid(req.params.uuid);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+    const result = await generateStoryboardHtml({
+      project,
+      sceneNumber,
+      force: req.body?.force === true,
+      signal: abortController.signal,
+    });
+    res.status(201).json(result);
+  } catch (error) {
+    if (abortController.signal.aborted) return;
+    console.error(`[storyboard-html] Generation failed project=${req.params.uuid} scene=${req.body?.sceneNumber}:`, error);
     res.status(500).json({ error: getErrorMessage(error) });
   }
 });
@@ -226,4 +295,16 @@ function getErrorMessage(error: unknown): string {
   }
 
   return 'Unknown server error';
+}
+
+function parseVideoSource(raw: string): { version: 1; type: 'storyboard_assets'; htmlStyleId?: string; scenes: Record<string, unknown> } {
+  try {
+    const parsed = JSON.parse(raw) as { version?: number; htmlStyleId?: string; scenes?: Record<string, unknown> };
+    if (parsed.version === 1 && parsed.scenes) {
+      return { version: 1, type: 'storyboard_assets', htmlStyleId: parsed.htmlStyleId, scenes: parsed.scenes };
+    }
+  } catch {
+    // Initialize an empty source document.
+  }
+  return { version: 1, type: 'storyboard_assets', scenes: {} };
 }

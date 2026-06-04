@@ -13,6 +13,7 @@ import {
   Mic,
   Minimize,
   Pause,
+  Palette,
   Play,
   Plus,
   RefreshCw,
@@ -27,12 +28,15 @@ import { StoryboardOutline } from '../../shared/storyboardOutline';
 import { ApiProjectRecord, ChatMessage, Project, ProjectMode } from '../types';
 import {
   createProject as createProjectApi,
+  confirmRegenerateVideoOutline,
   deleteProjectById,
   fetchProjectMessages,
   fetchProjects,
   generateStoryboardAudio,
+  generateStoryboardHtml,
   generateStoryboardImage,
   sendProjectMessage,
+  updateProjectHtmlStyle,
 } from '../lib/projectApi';
 import {
   attachOutlineToLatestMessage,
@@ -40,6 +44,8 @@ import {
   getDefaultPrompt,
   mapApiChatMessage,
 } from '../lib/projectContent';
+import HTMLAnimationPlayer from './HTMLAnimationPlayer';
+import { HTML_VIDEO_STYLES, HtmlVideoStyleId, getHtmlVideoStyle } from '../../shared/htmlVideoStyles';
 
 interface StudioViewProps {
   initialProjectId: string | null;
@@ -88,6 +94,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [messageLoadError, setMessageLoadError] = useState<string | null>(null);
+  const [confirmingOutlineMessageId, setConfirmingOutlineMessageId] = useState<string | null>(null);
   const [isGeneratingImages, setIsGeneratingImages] = useState(false);
   const [imageGenerationStatus, setImageGenerationStatus] = useState('');
   const [imageGenerationError, setImageGenerationError] = useState(false);
@@ -102,6 +109,8 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   const [newProjMode, setNewProjMode] = useState<ProjectMode>('slideshow');
   const [newProjPrompt, setNewProjPrompt] = useState('');
   const [expandedOutline, setExpandedOutline] = useState<StoryboardOutline | null>(null);
+  const [isStyleModalOpen, setIsStyleModalOpen] = useState(false);
+  const [isUpdatingHtmlStyle, setIsUpdatingHtmlStyle] = useState(false);
 
   const previewContainerRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -119,7 +128,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
     return (
       activeProject?.scenes.map((scene) => {
         const audioDuration = scene.audioUrl ? audioDurations[scene.audioUrl] : null;
-        const duration = audioDuration && Number.isFinite(audioDuration) ? audioDuration : DEFAULT_SCENE_DURATION;
+        const duration = audioDuration && Number.isFinite(audioDuration) ? audioDuration : scene.duration || DEFAULT_SCENE_DURATION;
         const timing = {
           duration,
           startTime: cursor,
@@ -132,6 +141,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   }, [activeProject?.scenes, audioDurations]);
   const totalDuration = sceneTimings.at(-1)?.endTime ?? 0;
   const currentActiveScene = activeProject?.scenes[activeSceneIndex] || null;
+  const activeHtmlStyle = getHtmlVideoStyle(activeProject?.htmlStyleId);
   const currentSceneTiming = sceneTimings[activeSceneIndex] || null;
   const currentSceneProgress = currentSceneTiming
     ? Math.min(1, Math.max(0, (playbackTime - currentSceneTiming.startTime) / currentSceneTiming.duration))
@@ -146,9 +156,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
       ?? captions.at(-1)?.text
       ?? '';
   }, [currentActiveScene, currentSceneProgress]);
-  const canGenerateStoryboardImages = Boolean(
-    activeProject?.mode === 'slideshow' && activeProject.outline && activeProject.scenes.length > 0,
-  );
+  const canGenerateStoryboardImages = Boolean(activeProject?.outline && activeProject.scenes.length > 0);
 
   useEffect(() => {
     setActiveProjectId(initialProjectId);
@@ -442,6 +450,23 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
     });
   };
 
+  const handleSelectHtmlStyle = async (styleId: HtmlVideoStyleId) => {
+    if (!activeProject || activeProject.mode !== 'html' || isUpdatingHtmlStyle) {
+      return;
+    }
+
+    setIsUpdatingHtmlStyle(true);
+    try {
+      const record = await updateProjectHtmlStyle({ projectUuid: activeProject.id, styleId });
+      applyGeneratedProjectRecord(activeProject.id, record);
+      setIsStyleModalOpen(false);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '更新 HTML 视频风格失败');
+    } finally {
+      setIsUpdatingHtmlStyle(false);
+    }
+  };
+
   const applyGeneratedProjectRecord = (projectId: string, record: ApiProjectRecord) => {
     const refreshedProject = createProjectFromRecord(record, { isActive: true });
     setProjects((previousProjects) =>
@@ -463,7 +488,10 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
     }
 
     const projectId = activeProject.id;
-    const scenesToGenerate = activeProject.scenes.filter((scene) => !scene.imageUrl || !scene.audioUrl);
+    const scenesToGenerate = activeProject.scenes.filter((scene) => {
+      const hasVisual = activeProject.mode === 'html' ? Boolean(scene.html) : Boolean(scene.imageUrl);
+      return !hasVisual || !scene.audioUrl;
+    });
     if (scenesToGenerate.length === 0) {
       setImageGenerationStatus('所有分镜画面和旁白音频已生成');
       setImageGenerationError(false);
@@ -487,18 +515,25 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
 
         setCurrentGeneratingSceneNumber(scene.sceneNumber);
         let latestProjectRecord: ApiProjectRecord | null = null;
-        if (!scene.imageUrl) {
+        const hasVisual = activeProject.mode === 'html' ? Boolean(scene.html) : Boolean(scene.imageUrl);
+        if (!hasVisual) {
           setCurrentGenerationPhase('image');
           setImageGenerationStatus(`正在生成画面 ${index + 1}/${scenesToGenerate.length}：Scene ${scene.sceneNumber}`);
           console.info(`[storyboard-image] Generating scene=${scene.sceneNumber}`);
-          const imageResult = await generateStoryboardImage({
-            projectUuid: projectId,
-            sceneNumber: scene.sceneNumber,
-            signal: abortController.signal,
-          });
-          latestProjectRecord = imageResult.project;
-          applyGeneratedProjectRecord(projectId, imageResult.project);
-          console.info(`[storyboard-image] Completed scene=${scene.sceneNumber} skipped=${imageResult.skipped}`);
+          const visualResult = activeProject.mode === 'html'
+            ? await generateStoryboardHtml({
+                projectUuid: projectId,
+                sceneNumber: scene.sceneNumber,
+                signal: abortController.signal,
+              })
+            : await generateStoryboardImage({
+                projectUuid: projectId,
+                sceneNumber: scene.sceneNumber,
+                signal: abortController.signal,
+              });
+          latestProjectRecord = visualResult.project;
+          applyGeneratedProjectRecord(projectId, visualResult.project);
+          console.info(`[storyboard-visual] Completed scene=${scene.sceneNumber} skipped=${visualResult.skipped}`);
         }
 
         if (abortController.signal.aborted) {
@@ -558,11 +593,17 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
     setRegeneratingAsset({ sceneNumber, type });
     try {
       const result = type === 'image'
-        ? await generateStoryboardImage({
-            projectUuid: activeProject.id,
-            sceneNumber,
-            force: true,
-          })
+        ? activeProject.mode === 'html'
+          ? await generateStoryboardHtml({
+              projectUuid: activeProject.id,
+              sceneNumber,
+              force: true,
+            })
+          : await generateStoryboardImage({
+              projectUuid: activeProject.id,
+              sceneNumber,
+              force: true,
+            })
         : await generateStoryboardAudio({
             projectUuid: activeProject.id,
             sceneNumber,
@@ -588,6 +629,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
     setCurrentGeneratingSceneNumber(null);
     setCurrentGenerationPhase(null);
     setImageGenerationProgress({ completed: 0, total: 0 });
+    setIsStyleModalOpen(false);
     setActiveProjectId(projectId);
     setProjects((previousProjects) =>
       previousProjects.map((project) => ({
@@ -750,6 +792,46 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
         ),
       );
     } finally {
+      setIsAssistantTyping(false);
+    }
+  };
+
+  const handleConfirmRegenerateOutline = async (confirmationMessageId: string) => {
+    if (!activeProject || isAssistantTyping || confirmingOutlineMessageId) {
+      return;
+    }
+
+    const projectId = activeProject.id;
+    setConfirmingOutlineMessageId(confirmationMessageId);
+    setIsAssistantTyping(true);
+    setMessageLoadError(null);
+
+    try {
+      const result = await confirmRegenerateVideoOutline({
+        projectUuid: projectId,
+        confirmationMessageUuid: confirmationMessageId,
+      });
+      const refreshedProject = createProjectFromRecord(result.project, { isActive: true });
+      const assistantMessage = mapApiChatMessage(result.assistantMessage, result.outline);
+
+      setProjects((previousProjects) =>
+        previousProjects.map((project) =>
+          project.id === projectId
+            ? {
+                ...refreshedProject,
+                isActive: true,
+                messages: [...project.messages, assistantMessage],
+              }
+            : project,
+        ),
+      );
+      setActiveSceneIndex(0);
+      setPlaybackTime(0);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '确认重新生成视频大纲失败');
+      await loadMessages(projectId);
+    } finally {
+      setConfirmingOutlineMessageId(null);
       setIsAssistantTyping(false);
     }
   };
@@ -1130,7 +1212,23 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
               ) : (
                 <div className="relative h-full overflow-hidden bg-[#050816]">
                   {activeProject.scenes.map((scene, index) =>
-                    scene.imageUrl ? (
+                    activeProject.mode === 'html' && scene.html ? (
+                      <div
+                        key={scene.id}
+                        className="absolute inset-0"
+                        style={{
+                          opacity: index === activeSceneIndex ? 1 : 0,
+                          transition: 'opacity 1000ms ease-in-out',
+                          pointerEvents: index === activeSceneIndex ? 'auto' : 'none',
+                        }}
+                      >
+                        <HTMLAnimationPlayer
+                          html={scene.html}
+                          isPlaying={index === activeSceneIndex && isPlaying}
+                          title={scene.title}
+                        />
+                      </div>
+                    ) : scene.imageUrl ? (
                       <img
                         key={scene.id}
                         src={scene.imageUrl}
@@ -1145,7 +1243,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                     ) : null,
                   )}
 
-                  {!currentActiveScene?.imageUrl && (
+                  {!(activeProject.mode === 'html' ? currentActiveScene?.html : currentActiveScene?.imageUrl) && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(221,183,255,0.18),_transparent_42%),linear-gradient(135deg,#0b1326,#060e20)] px-8 text-center">
                       <Sparkles className="mb-4 h-8 w-8 text-[#ddb7ff]" />
                       <p className="text-base font-semibold text-white">当前分镜画面尚未生成</p>
@@ -1266,13 +1364,15 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                         }`}
                       >
                         <div className="relative h-24 overflow-hidden border-b border-white/5 bg-[linear-gradient(135deg,rgba(221,183,255,0.12),rgba(76,215,246,0.08),rgba(11,19,38,0.9))] p-3">
-                          {scene.imageUrl && (
+                          {activeProject.mode === 'html' && scene.html ? (
+                            <HTMLAnimationPlayer html={scene.html} title={scene.title} />
+                          ) : scene.imageUrl ? (
                             <img
                               src={scene.imageUrl}
                               alt={scene.title}
                               className="absolute inset-0 h-full w-full object-cover"
                             />
-                          )}
+                          ) : null}
                           <div className="absolute inset-0 bg-gradient-to-t from-[#050816]/95 via-[#050816]/40 to-[#050816]/25" />
                           {currentGeneratingSceneNumber === scene.sceneNumber && (
                             <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#050816]/70">
@@ -1360,7 +1460,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                 </div>
               )}
 
-              {activeProject.messages.map((message) => (
+              {activeProject.messages.map((message, messageIndex) => (
                 <div
                   key={message.id}
                   className={`flex max-w-[92%] flex-col gap-1.5 ${message.sender === 'user' ? 'ml-auto items-end' : 'mr-auto items-start'}`}
@@ -1407,6 +1507,25 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                     {message.outline && (
                       <OutlineCard outline={message.outline} onOpen={() => setExpandedOutline(message.outline)} />
                     )}
+
+                    {message.action === 'regenerate_video_outline_confirmation' &&
+                      messageIndex === activeProject.messages.length - 1 && (
+                        <div className="mt-3 border-t border-[#1e293b] pt-3">
+                          <button
+                            type="button"
+                            onClick={() => void handleConfirmRegenerateOutline(message.id)}
+                            disabled={isAssistantTyping || Boolean(confirmingOutlineMessageId)}
+                            className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-[#ddb7ff] px-3 py-2 text-[11px] font-bold text-[#2c0051] transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {confirmingOutlineMessageId === message.id ? (
+                              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                              <Check className="h-3.5 w-3.5" />
+                            )}
+                            {confirmingOutlineMessageId === message.id ? '正在重新生成大纲' : '确认覆盖并重新生成'}
+                          </button>
+                        </div>
+                      )}
                   </div>
 
                   <span className="text-[9px] font-mono tracking-wider text-slate-500">
@@ -1471,10 +1590,24 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                     }
                   }}
                   disabled={isAssistantTyping}
-                  className="custom-scrollbar min-h-[76px] max-h-[120px] w-full resize-none rounded-xl border border-[#1e293b]/80 bg-[#0b1326] py-3 pl-4 pr-20 text-xs text-white placeholder-slate-500 focus:border-[#ddb7ff] focus:outline-none"
+                  className={`custom-scrollbar min-h-[76px] max-h-[120px] w-full resize-none rounded-xl border border-[#1e293b]/80 bg-[#0b1326] py-3 pl-4 text-xs text-white placeholder-slate-500 focus:border-[#ddb7ff] focus:outline-none ${
+                    activeProject.mode === 'html' ? 'pr-48' : 'pr-20'
+                  }`}
                   placeholder="输入您的创意修改指令... (回车发送)"
                 />
                 <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1.5">
+                  {activeProject.mode === 'html' && (
+                    <button
+                      type="button"
+                      onClick={() => setIsStyleModalOpen(true)}
+                      disabled={isAssistantTyping || isUpdatingHtmlStyle}
+                      className="flex cursor-pointer items-center gap-1 rounded-lg border border-[#4cd7f6]/25 bg-[#4cd7f6]/10 px-2 py-1.5 text-[10px] text-[#4cd7f6] transition hover:bg-[#4cd7f6]/20 disabled:cursor-not-allowed disabled:opacity-50"
+                      title={`视觉风格：${activeHtmlStyle.name}`}
+                    >
+                      <Palette className="h-3.5 w-3.5" />
+                      <span className="max-w-20 truncate">{activeHtmlStyle.name}</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => window.alert('语音助手启动中... 请在设置中启用麦克风授权。')}
@@ -1543,9 +1676,11 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                   return (
                     <div key={scene.sceneNumber} className="overflow-hidden rounded-2xl border border-[#1e293b] bg-[#101827]">
                     <div className="relative h-44 overflow-hidden border-b border-white/5 bg-[linear-gradient(135deg,rgba(221,183,255,0.12),rgba(76,215,246,0.08),rgba(11,19,38,0.9))] p-4">
-                      {projectScene?.imageUrl && (
+                      {expandedOutline.mode === 'html' && projectScene?.html ? (
+                        <HTMLAnimationPlayer html={projectScene.html} title={scene.title} />
+                      ) : projectScene?.imageUrl ? (
                         <img src={projectScene.imageUrl} alt={scene.title} className="absolute inset-0 h-full w-full object-cover" />
-                      )}
+                      ) : null}
                       <div className="absolute inset-0 bg-gradient-to-t from-[#050816]/95 via-[#050816]/35 to-[#050816]/25" />
                       <div className="relative flex items-center justify-between">
                         <div className="text-[10px] font-mono uppercase tracking-[0.24em] text-[#ddb7ff]">
@@ -1567,7 +1702,9 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                       </div>
                       <div className="absolute inset-x-4 bottom-4">
                         <h4 className="text-base font-semibold text-white">{scene.title}</h4>
-                        <p className="mt-1 text-xs text-slate-300">{projectScene?.imageUrl ? '当前分镜画面' : '当前分镜画面尚未生成'}</p>
+                        <p className="mt-1 text-xs text-slate-300">
+                          {(expandedOutline.mode === 'html' ? projectScene?.html : projectScene?.imageUrl) ? '当前分镜画面' : '当前分镜画面尚未生成'}
+                        </p>
                       </div>
                     </div>
                     <div className="space-y-4 p-4">
@@ -1594,7 +1731,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                         </button>
                         <button
                           type="button"
-                          disabled={!projectScene?.imageUrl || Boolean(regeneratingAsset) || isGeneratingImages}
+                          disabled={!(expandedOutline.mode === 'html' ? projectScene?.html : projectScene?.imageUrl) || Boolean(regeneratingAsset) || isGeneratingImages}
                           onClick={() => void handleRegenerateSceneAsset(scene.sceneNumber, 'audio')}
                           className="flex items-center justify-center gap-1.5 rounded-lg border border-orange-400/30 bg-orange-400/10 px-3 py-2 text-xs text-orange-300 transition hover:bg-orange-400/20 disabled:cursor-not-allowed disabled:opacity-50"
                         >
@@ -1607,6 +1744,68 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                   );
                 })}
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isStyleModalOpen && activeProject.mode === 'html' && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-5 backdrop-blur-md">
+          <div className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl border border-[#1e293b] bg-[#09111f] shadow-[0_0_50px_rgba(76,215,246,0.12)]">
+            <div className="flex items-start justify-between gap-5 border-b border-[#1e293b] px-6 py-5">
+              <div>
+                <div className="text-xs font-mono uppercase tracking-[0.24em] text-[#4cd7f6]">HTML Video Style</div>
+                <h3 className="mt-2 text-xl font-bold text-white">选择网页动画视觉风格</h3>
+                <p className="mt-2 text-sm text-slate-400">所选风格会附加到后续每个 HTML 分镜动画的生成提示词中。</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsStyleModalOpen(false)}
+                disabled={isUpdatingHtmlStyle}
+                className="rounded-xl border border-[#1e293b] px-4 py-2 text-sm text-slate-300 transition hover:border-[#4cd7f6]/40 hover:text-white disabled:opacity-50"
+              >
+                关闭
+              </button>
+            </div>
+            <div className="custom-scrollbar grid flex-1 gap-5 overflow-y-auto p-6 md:grid-cols-3">
+              {HTML_VIDEO_STYLES.map((style) => {
+                const isSelected = activeProject.htmlStyleId === style.id;
+                return (
+                  <button
+                    key={style.id}
+                    type="button"
+                    disabled={isUpdatingHtmlStyle}
+                    onClick={() => void handleSelectHtmlStyle(style.id)}
+                    className={`group overflow-hidden rounded-2xl border bg-[#101827] text-left transition ${
+                      isSelected
+                        ? 'border-[#4cd7f6] shadow-[0_0_22px_rgba(76,215,246,0.18)]'
+                        : 'border-[#1e293b] hover:-translate-y-1 hover:border-[#4cd7f6]/45'
+                    } disabled:cursor-wait disabled:opacity-60`}
+                  >
+                    <div className="aspect-video overflow-hidden border-b border-white/5 bg-black">
+                      <HTMLAnimationPlayer html={style.demoHtml} title={`${style.name}动画演示`} className="pointer-events-none" />
+                    </div>
+                    <div className="space-y-3 p-4">
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <h4 className="font-bold text-white">{style.name}</h4>
+                          <p className="mt-1 text-[10px] text-[#4cd7f6]">{style.badge}</p>
+                        </div>
+                        {isSelected && (
+                          <span className="rounded-full bg-[#4cd7f6]/15 px-2.5 py-1 text-[10px] text-[#4cd7f6]">当前风格</span>
+                        )}
+                      </div>
+                      <p className="text-xs font-medium text-slate-300">{style.tagline}</p>
+                      <p className="text-[11px] leading-5 text-slate-500">{style.description}</p>
+                      <div className="flex gap-2">
+                        {style.colors.map((color) => (
+                          <span key={color} className="h-4 w-4 rounded-full border border-white/15" style={{ backgroundColor: color }} />
+                        ))}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </div>
         </div>

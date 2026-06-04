@@ -63,7 +63,7 @@ function buildSystemPrompt(mode: StoryboardProjectMode): string {
           '不要写成静态图片生成语言，要强调动画、时间线、形状变化、粒子、路径、转场等动态效果。',
         ].join('\n');
 
-  return `你是一名专业的视频脚本与分镜导演，需要根据用户输入生成结构化视频大纲。
+  return `${mode === 'html' ? '你是一个网页动画视频设计工程师，擅长把叙事脚本拆解为可通过 HTML、CSS、JavaScript、SVG、Canvas 实现的动态网页分镜。' : '你是一名专业的视频脚本与分镜导演，需要根据用户输入生成结构化视频大纲。'}
 
 请严格遵守以下要求：
 1. 先根据用户提示词写出完整的视频脚本逐字稿 fullScript，要求可直接用于旁白朗读。
@@ -119,8 +119,7 @@ function buildOutlinePrompt(input: {
 
   const existingOutline = input.existingOutline ? parseStoryboardOutline(input.existingOutline) : null;
   if (input.regenerate && existingOutline) {
-    sections.push(`当前已有大纲摘要：${existingOutline.summary}`);
-    sections.push(`当前已有分镜数：${existingOutline.scenes.length}`);
+    sections.push(`当前已有完整分镜大纲：\n${input.existingOutline?.trim()}`);
     sections.push('请在保留核心主题的前提下，重新组织脚本和分镜，避免只是微调措辞。');
   }
 

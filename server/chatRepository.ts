@@ -6,6 +6,7 @@ export type ChatSender = 'assistant' | 'user';
 export type VideoIntentAction =
   | 'generate_video_outline'
   | 'regenerate_video_outline'
+  | 'regenerate_video_outline_confirmation'
   | 'add_scene'
   | 'delete_scene'
   | 'regenerate_scene'
@@ -52,7 +53,7 @@ export async function createProjectMessage(input: {
   reason?: string | null;
 }): Promise<ChatMessageRecord> {
   const pool = getDbPool();
-  const uuid = randomUUID();
+  const uuid = createSortableMessageUuid();
 
   await pool.execute<ResultSetHeader>(
     `INSERT INTO project_chat_message
@@ -70,6 +71,25 @@ export async function createProjectMessage(input: {
   );
 
   return mapChatMessageRow(rows[0]);
+}
+
+function createSortableMessageUuid(): string {
+  // created_at is second-precision, so the UUID also carries time to preserve message order.
+  return `${Date.now().toString().padStart(13, '0')}-${randomUUID().replaceAll('-', '').slice(0, 22)}`;
+}
+
+export async function getLatestProjectMessage(projectUuid: string): Promise<ChatMessageRecord | null> {
+  const pool = getDbPool();
+  const [rows] = await pool.query<ChatMessageRow[]>(
+    `SELECT uuid, project_uuid, sender, content, intent_action, intent_reason, created_at
+     FROM project_chat_message
+     WHERE project_uuid = ?
+     ORDER BY created_at DESC, uuid DESC
+     LIMIT 1`,
+    [projectUuid],
+  );
+
+  return rows[0] ? mapChatMessageRow(rows[0]) : null;
 }
 
 function mapChatMessageRow(row: ChatMessageRow): ChatMessageRecord {

@@ -13,7 +13,7 @@ interface StoryboardImageSource {
 
 interface ProjectVideoSource {
   version: 1;
-  type: 'storyboard_images';
+  type: 'storyboard_assets';
   scenes: Record<string, StoryboardImageSource>;
 }
 
@@ -137,8 +137,8 @@ function parseProjectVideoSource(raw: string): ProjectVideoSource {
   if (raw.trim()) {
     try {
       const parsed = JSON.parse(raw) as ProjectVideoSource;
-      if (parsed.version === 1 && parsed.type === 'storyboard_images' && parsed.scenes) {
-        return parsed;
+      if (parsed.version === 1 && parsed.scenes) {
+        return { ...parsed, type: 'storyboard_assets' };
       }
     } catch {
       // Fall back to a fresh source index if legacy content is not JSON.
@@ -147,7 +147,7 @@ function parseProjectVideoSource(raw: string): ProjectVideoSource {
 
   return {
     version: 1,
-    type: 'storyboard_images',
+    type: 'storyboard_assets',
     scenes: {},
   };
 }

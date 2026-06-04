@@ -2,10 +2,12 @@ import {
   ApiChatMessageRecord,
   ApiGenerateStoryboardAudioResult,
   ApiGenerateStoryboardImageResult,
+  ApiGenerateStoryboardHtmlResult,
   ApiProjectRecord,
   ApiSendMessageResult,
   ProjectMode,
 } from '../types';
+import { HtmlVideoStyleId } from '../../shared/htmlVideoStyles';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || '';
 
@@ -82,6 +84,27 @@ export async function sendProjectMessage(input: {
   return data as ApiSendMessageResult;
 }
 
+export async function confirmRegenerateVideoOutline(input: {
+  projectUuid: string;
+  confirmationMessageUuid: string;
+}): Promise<ApiSendMessageResult> {
+  const response = await fetch(
+    `${API_BASE_URL}/api/projects/${input.projectUuid}/regenerate-outline-confirmations/${input.confirmationMessageUuid}`,
+    { method: 'POST' },
+  );
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, '确认重新生成视频大纲失败'));
+  }
+
+  const data = (await response.json()) as Partial<ApiSendMessageResult>;
+  if (!data.assistantMessage || !data.analysis || !data.project || !data.outline) {
+    throw new Error('服务端没有返回完整的重新生成结果');
+  }
+
+  return data as ApiSendMessageResult;
+}
+
 export async function generateStoryboardImage(input: {
   projectUuid: string;
   sceneNumber: number;
@@ -108,6 +131,40 @@ export async function generateStoryboardImage(input: {
   }
 
   return data as ApiGenerateStoryboardImageResult;
+}
+
+export async function generateStoryboardHtml(input: {
+  projectUuid: string;
+  sceneNumber: number;
+  force?: boolean;
+  signal?: AbortSignal;
+}): Promise<ApiGenerateStoryboardHtmlResult> {
+  const response = await fetch(`${API_BASE_URL}/api/projects/${input.projectUuid}/storyboard-html`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sceneNumber: input.sceneNumber, force: input.force ?? false }),
+    signal: input.signal,
+  });
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, '生成分镜 HTML 动画失败'));
+  }
+  const data = (await response.json()) as Partial<ApiGenerateStoryboardHtmlResult>;
+  if (!data.project || !data.animation || typeof data.sceneNumber !== 'number') {
+    throw new Error('服务端没有返回完整的分镜 HTML 动画信息');
+  }
+  return data as ApiGenerateStoryboardHtmlResult;
+}
+
+export async function updateProjectHtmlStyle(input: {
+  projectUuid: string;
+  styleId: HtmlVideoStyleId;
+}): Promise<ApiProjectRecord> {
+  const response = await fetch(`${API_BASE_URL}/api/projects/${input.projectUuid}/html-style`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ styleId: input.styleId }),
+  });
+  return parseProjectResponse(response);
 }
 
 export async function generateStoryboardAudio(input: {

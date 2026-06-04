@@ -1,10 +1,12 @@
 import { StoryboardOutline } from '../shared/storyboardOutline';
+import { HtmlVideoStyleId } from '../shared/htmlVideoStyles';
 
 export type ProjectMode = 'slideshow' | 'html';
 export type ChatSender = 'assistant' | 'user';
 export type VideoIntentAction =
   | 'generate_video_outline'
   | 'regenerate_video_outline'
+  | 'regenerate_video_outline_confirmation'
   | 'add_scene'
   | 'delete_scene'
   | 'regenerate_scene'
@@ -18,6 +20,7 @@ export interface Scene {
   visualPrompt: string;
   imageUrl?: string | null;
   imagePath?: string | null;
+  html?: string | null;
   audioUrl?: string | null;
   audioPath?: string | null;
   duration: number; // in seconds
@@ -55,6 +58,7 @@ export interface Project {
   storyboardOutline: string;
   outline: StoryboardOutline | null;
   videoSource: string;
+  htmlStyleId: HtmlVideoStyleId;
   isActive: boolean;
   messages: ChatMessage[];
 }
@@ -106,10 +110,26 @@ export interface StoryboardAudioSource {
   generatedAt: string;
 }
 
+export interface StoryboardHtmlSource {
+  html: string;
+  prompt: string;
+  generatedAt: string;
+}
+
+export interface StoryboardSceneSource {
+  path?: string;
+  url?: string;
+  prompt?: string;
+  generatedAt?: string;
+  html?: string;
+  audio?: StoryboardAudioSource;
+}
+
 export interface ProjectVideoSource {
   version: 1;
-  type: 'storyboard_images';
-  scenes: Record<string, StoryboardImageSource>;
+  type: 'storyboard_assets';
+  htmlStyleId?: HtmlVideoStyleId;
+  scenes: Record<string, StoryboardSceneSource>;
 }
 
 export interface ApiGenerateStoryboardImageResult {
@@ -123,5 +143,12 @@ export interface ApiGenerateStoryboardAudioResult {
   project: ApiProjectRecord;
   sceneNumber: number;
   audio: StoryboardAudioSource;
+  skipped: boolean;
+}
+
+export interface ApiGenerateStoryboardHtmlResult {
+  project: ApiProjectRecord;
+  sceneNumber: number;
+  animation: StoryboardHtmlSource;
   skipped: boolean;
 }

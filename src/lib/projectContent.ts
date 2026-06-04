@@ -1,4 +1,5 @@
 import { StoryboardOutline, parseStoryboardOutline } from '../../shared/storyboardOutline';
+import { DEFAULT_HTML_VIDEO_STYLE_ID } from '../../shared/htmlVideoStyles';
 import { ApiChatMessageRecord, ChatMessage, Project, ProjectMode, ProjectVideoSource, Scene } from '../types';
 
 export function getDefaultPrompt(mode: ProjectMode): string {
@@ -49,6 +50,7 @@ export function createProjectFromRecord(
     storyboardOutline: record.storyboardOutline,
     outline,
     videoSource: record.videoSource,
+    htmlStyleId: videoSource?.htmlStyleId ?? DEFAULT_HTML_VIDEO_STYLE_ID,
     isActive: options.isActive,
     messages: [],
   };
@@ -165,6 +167,7 @@ function mapScenesFromOutline(outline: StoryboardOutline, videoSource: ProjectVi
       visualPrompt: scene.visualPrompt,
       imageUrl: source?.url ?? null,
       imagePath: source?.path ?? null,
+      html: source?.html ?? null,
       audioUrl: source?.audio?.url ?? null,
       audioPath: source?.audio?.path ?? null,
       duration: scene.durationSeconds,
@@ -186,11 +189,10 @@ function parseProjectVideoSource(raw: string): ProjectVideoSource | null {
     }
 
     const candidate = parsed as ProjectVideoSource;
-    if (candidate.version !== 1 || candidate.type !== 'storyboard_images' || !candidate.scenes) {
+    if (candidate.version !== 1 || !candidate.scenes) {
       return null;
     }
-
-    return candidate;
+    return { ...candidate, type: 'storyboard_assets' };
   } catch {
     return null;
   }

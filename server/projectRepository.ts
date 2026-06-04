@@ -114,6 +114,28 @@ export async function updateProjectStoryboardOutline(uuid: string, storyboardOut
   return project;
 }
 
+export async function replaceProjectStoryboardOutline(
+  uuid: string,
+  storyboardOutline: string,
+  videoSource: string,
+): Promise<ProjectRecord> {
+  const pool = getDbPool();
+
+  await pool.execute<ResultSetHeader>(
+    `UPDATE project
+     SET storyboard_outline = ?, video_source = ?
+     WHERE uuid = ?`,
+    [storyboardOutline, videoSource, uuid],
+  );
+
+  const project = await getProjectByUuid(uuid);
+  if (!project) {
+    throw new Error('Project not found after replacing storyboard outline.');
+  }
+
+  return project;
+}
+
 export async function updateProjectVideoSource(uuid: string, videoSource: string): Promise<ProjectRecord> {
   const pool = getDbPool();
 

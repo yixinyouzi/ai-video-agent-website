@@ -18,12 +18,13 @@ interface StoryboardSceneSource {
   url?: string;
   prompt?: string;
   generatedAt?: string;
+  html?: string;
   audio?: StoryboardAudioSource;
 }
 
 interface ProjectVideoSource {
   version: 1;
-  type: 'storyboard_images';
+  type: 'storyboard_assets';
   scenes: Record<string, StoryboardSceneSource>;
 }
 
@@ -53,8 +54,11 @@ export async function generateStoryboardAudio(input: {
 
   const videoSource = parseProjectVideoSource(input.project.videoSource);
   const sceneSource = videoSource.scenes[String(input.sceneNumber)] ?? {};
-  if (!sceneSource.path || !sceneSource.url) {
+  if (outline.mode === 'slideshow' && (!sceneSource.path || !sceneSource.url)) {
     throw new Error(`Scene ${input.sceneNumber} image must be generated before narration audio.`);
+  }
+  if (outline.mode === 'html' && !sceneSource.html) {
+    throw new Error(`Scene ${input.sceneNumber} HTML animation must be generated before narration audio.`);
   }
   if (!input.force && sceneSource.audio?.path && sceneSource.audio?.url) {
     console.log(`${logPrefix} Skipped because narration audio already exists`);
@@ -221,8 +225,8 @@ function parseProjectVideoSource(raw: string): ProjectVideoSource {
   if (raw.trim()) {
     try {
       const parsed = JSON.parse(raw) as ProjectVideoSource;
-      if (parsed.version === 1 && parsed.type === 'storyboard_images' && parsed.scenes) {
-        return parsed;
+      if (parsed.version === 1 && parsed.scenes) {
+        return { ...parsed, type: 'storyboard_assets' };
       }
     } catch {
       // Fall back to a fresh source index if legacy content is not JSON.
@@ -231,7 +235,7 @@ function parseProjectVideoSource(raw: string): ProjectVideoSource {
 
   return {
     version: 1,
-    type: 'storyboard_images',
+    type: 'storyboard_assets',
     scenes: {},
   };
 }
