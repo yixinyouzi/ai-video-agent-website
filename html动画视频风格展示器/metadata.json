@@ -1,6 +1,0 @@
-{
-  "name": "HTML动画视频风格展示器",
-  "description": "内置3套适合知识讲解与科技博主的HTML视频动画效果展示器，附带风格生成提示词供用户复制。",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

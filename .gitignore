@@ -21,6 +21,8 @@ pnpm-debug.log*
 *.pid
 *.pid.lock
 project-images/
+html动画视频风格展示器/
+html动画视频风格展示器.zip
 
 # TypeScript
 *.tsbuildinfo
