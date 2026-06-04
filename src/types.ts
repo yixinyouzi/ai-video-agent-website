@@ -16,6 +16,8 @@ export interface Scene {
   title: string;
   narration: string;
   visualPrompt: string;
+  imageUrl?: string | null;
+  imagePath?: string | null;
   duration: number; // in seconds
   startTime: number;
   endTime: number;
@@ -84,4 +86,24 @@ export interface ApiSendMessageResult {
   analysis: ApiIntentAnalysisResult;
   project: ApiProjectRecord;
   outline: StoryboardOutline | null;
+}
+
+export interface StoryboardImageSource {
+  path: string;
+  url: string;
+  prompt: string;
+  generatedAt: string;
+}
+
+export interface ProjectVideoSource {
+  version: 1;
+  type: 'storyboard_images';
+  scenes: Record<string, StoryboardImageSource>;
+}
+
+export interface ApiGenerateStoryboardImageResult {
+  project: ApiProjectRecord;
+  sceneNumber: number;
+  image: StoryboardImageSource;
+  skipped: boolean;
 }

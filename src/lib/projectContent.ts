@@ -1,5 +1,5 @@
 import { StoryboardOutline, parseStoryboardOutline } from '../../shared/storyboardOutline';
-import { ApiChatMessageRecord, ChatMessage, Project, ProjectMode, Scene } from '../types';
+import { ApiChatMessageRecord, ChatMessage, Project, ProjectMode, ProjectVideoSource, Scene } from '../types';
 
 export function getDefaultPrompt(mode: ProjectMode): string {
   return mode === 'slideshow'
@@ -31,8 +31,9 @@ export function createProjectFromRecord(
   },
 ): Project {
   const outline = parseStoryboardOutline(record.storyboardOutline);
+  const videoSource = parseProjectVideoSource(record.videoSource);
   const prompt = options.promptOverride?.trim() || outline?.userPrompt || extractPromptFromOutline(record.storyboardOutline) || getDefaultPrompt(record.type);
-  const scenes = outline ? mapScenesFromOutline(outline) : [];
+  const scenes = outline ? mapScenesFromOutline(outline, videoSource) : [];
 
   return {
     id: record.uuid,
@@ -147,13 +148,14 @@ export function formatChatTimestamp(value: string): string {
   }).format(created);
 }
 
-function mapScenesFromOutline(outline: StoryboardOutline): Scene[] {
+function mapScenesFromOutline(outline: StoryboardOutline, videoSource: ProjectVideoSource | null): Scene[] {
   let cursor = 0;
 
   return outline.scenes.map((scene) => {
     const startTime = cursor;
     const endTime = cursor + scene.durationSeconds;
     cursor = endTime;
+    const source = videoSource?.scenes[String(scene.sceneNumber)] ?? null;
 
     return {
       id: globalThis.crypto?.randomUUID?.() ?? `${scene.sceneNumber}-${startTime}`,
@@ -161,11 +163,35 @@ function mapScenesFromOutline(outline: StoryboardOutline): Scene[] {
       title: scene.title,
       narration: scene.narration,
       visualPrompt: scene.visualPrompt,
+      imageUrl: source?.url ?? null,
+      imagePath: source?.path ?? null,
       duration: scene.durationSeconds,
       startTime,
       endTime,
     };
   });
+}
+
+function parseProjectVideoSource(raw: string): ProjectVideoSource | null {
+  if (!raw.trim()) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') {
+      return null;
+    }
+
+    const candidate = parsed as ProjectVideoSource;
+    if (candidate.version !== 1 || candidate.type !== 'storyboard_images' || !candidate.scenes) {
+      return null;
+    }
+
+    return candidate;
+  } catch {
+    return null;
+  }
 }
 
 function extractPromptFromOutline(outline: string): string | null {

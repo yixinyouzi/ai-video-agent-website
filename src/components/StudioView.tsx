@@ -29,6 +29,7 @@ import {
   deleteProjectById,
   fetchProjectMessages,
   fetchProjects,
+  generateStoryboardImage,
   sendProjectMessage,
 } from '../lib/projectApi';
 import {
@@ -71,6 +72,11 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
   const [isLoadingMessages, setIsLoadingMessages] = useState(false);
   const [messageLoadError, setMessageLoadError] = useState<string | null>(null);
+  const [isGeneratingImages, setIsGeneratingImages] = useState(false);
+  const [imageGenerationStatus, setImageGenerationStatus] = useState('');
+  const [imageGenerationError, setImageGenerationError] = useState(false);
+  const [currentGeneratingSceneNumber, setCurrentGeneratingSceneNumber] = useState<number | null>(null);
+  const [imageGenerationProgress, setImageGenerationProgress] = useState({ completed: 0, total: 0 });
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newProjTitle, setNewProjTitle] = useState('');
@@ -83,6 +89,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const dragStartRef = useRef<{ x: number; width: number } | null>(null);
   const playerTimerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
+  const imageGenerationAbortRef = useRef<AbortController | null>(null);
 
   const activeProject = projects.find((project) => project.isActive) || projects[0] || null;
   const totalDuration = useMemo(
@@ -90,6 +97,9 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
     [activeProject?.scenes],
   );
   const currentActiveScene = activeProject?.scenes[activeSceneIndex] || null;
+  const canGenerateStoryboardImages = Boolean(
+    activeProject?.mode === 'slideshow' && activeProject.outline && activeProject.scenes.length > 0,
+  );
 
   useEffect(() => {
     setActiveProjectId(initialProjectId);
@@ -278,7 +288,93 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
     setPlaybackTime(activeProject.scenes[index].startTime);
   };
 
+  const handleGenerateAllStoryboardImages = async () => {
+    if (!activeProject || !canGenerateStoryboardImages || isGeneratingImages) {
+      return;
+    }
+
+    const projectId = activeProject.id;
+    const scenesToGenerate = activeProject.scenes.filter((scene) => !scene.imageUrl);
+    if (scenesToGenerate.length === 0) {
+      setImageGenerationStatus('所有分镜画面已生成');
+      setImageGenerationError(false);
+      return;
+    }
+
+    const abortController = new AbortController();
+    imageGenerationAbortRef.current = abortController;
+    setIsGeneratingImages(true);
+    setImageGenerationError(false);
+    setImageGenerationProgress({ completed: 0, total: scenesToGenerate.length });
+    setImageGenerationStatus(`已开始生成，共 ${scenesToGenerate.length} 个分镜画面`);
+    console.info(`[storyboard-image] Starting batch project=${projectId} scenes=${scenesToGenerate.length}`);
+
+    try {
+      for (let index = 0; index < scenesToGenerate.length; index += 1) {
+        const scene = scenesToGenerate[index];
+        if (abortController.signal.aborted) {
+          break;
+        }
+
+        setCurrentGeneratingSceneNumber(scene.sceneNumber);
+        setImageGenerationStatus(`正在生成 ${index + 1}/${scenesToGenerate.length}：Scene ${scene.sceneNumber}`);
+        console.info(`[storyboard-image] Generating scene=${scene.sceneNumber}`);
+        const result = await generateStoryboardImage({
+          projectUuid: projectId,
+          sceneNumber: scene.sceneNumber,
+          signal: abortController.signal,
+        });
+        const refreshedProject = createProjectFromRecord(result.project, {
+          isActive: true,
+        });
+
+        setProjects((previousProjects) =>
+          previousProjects.map((project) =>
+            project.id === projectId
+              ? {
+                  ...refreshedProject,
+                  isActive: true,
+                  messages: project.messages,
+                }
+              : project,
+          ),
+        );
+        setImageGenerationProgress({ completed: index + 1, total: scenesToGenerate.length });
+        console.info(`[storyboard-image] Completed scene=${scene.sceneNumber} skipped=${result.skipped}`);
+      }
+
+      setImageGenerationStatus(abortController.signal.aborted ? '已中断生成，已完成的图片已保存' : '分镜画面生成完成');
+    } catch (error) {
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setImageGenerationStatus('已中断生成，已完成的图片已保存');
+        return;
+      }
+
+      setImageGenerationError(true);
+      setImageGenerationStatus(error instanceof Error ? `生成失败：${error.message}` : '分镜画面生成失败');
+      console.error('[storyboard-image] Batch generation failed', error);
+    } finally {
+      if (imageGenerationAbortRef.current === abortController) {
+        imageGenerationAbortRef.current = null;
+      }
+      setIsGeneratingImages(false);
+      setCurrentGeneratingSceneNumber(null);
+    }
+  };
+
+  const handleStopStoryboardImageGeneration = () => {
+    imageGenerationAbortRef.current?.abort();
+    setImageGenerationStatus('正在中断生成...');
+  };
+
   const selectProject = (projectId: string) => {
+    imageGenerationAbortRef.current?.abort();
+    imageGenerationAbortRef.current = null;
+    setIsGeneratingImages(false);
+    setImageGenerationStatus('');
+    setImageGenerationError(false);
+    setCurrentGeneratingSceneNumber(null);
+    setImageGenerationProgress({ completed: 0, total: 0 });
     setActiveProjectId(projectId);
     setProjects((previousProjects) =>
       previousProjects.map((project) => ({
@@ -691,6 +787,40 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
               </div>
 
               <div className="flex items-center gap-2">
+                {canGenerateStoryboardImages && (
+                  <>
+                    <button
+                      onClick={() => void handleGenerateAllStoryboardImages()}
+                      disabled={isGeneratingImages}
+                      className={`flex cursor-pointer items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-all ${
+                        isGeneratingImages
+                          ? 'cursor-not-allowed border-slate-700/60 bg-slate-800 text-slate-500'
+                          : 'border-[#ddb7ff]/30 bg-[#ddb7ff]/10 text-[#ddb7ff] hover:bg-[#ddb7ff]/20'
+                      }`}
+                    >
+                      {isGeneratingImages ? (
+                        <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="h-3.5 w-3.5" />
+                      )}
+                      <span>{isGeneratingImages ? '生成中' : '一键生成'}</span>
+                    </button>
+
+                    <button
+                      onClick={handleStopStoryboardImageGeneration}
+                      disabled={!isGeneratingImages}
+                      className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-all ${
+                        isGeneratingImages
+                          ? 'cursor-pointer border-rose-400/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/20'
+                          : 'cursor-not-allowed border-slate-700/60 bg-slate-800 text-slate-500'
+                      }`}
+                    >
+                      <Pause className="h-3.5 w-3.5" />
+                      <span>中断生成</span>
+                    </button>
+                  </>
+                )}
+
                 <button
                   onClick={() => setIsCaptionsOn((currentValue) => !currentValue)}
                   className={`flex cursor-pointer items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs transition-all ${
@@ -725,6 +855,46 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                 </button>
               </div>
             </div>
+
+            {imageGenerationStatus && (
+              <div
+                className={`shrink-0 rounded-lg border px-4 py-3 ${
+                  imageGenerationError
+                    ? 'border-rose-400/40 bg-rose-500/10 text-rose-100'
+                    : 'border-[#ddb7ff]/30 bg-[#ddb7ff]/10 text-slate-200'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex min-w-0 items-center gap-2 text-xs">
+                    {isGeneratingImages ? (
+                      <RefreshCw className="h-4 w-4 shrink-0 animate-spin text-[#ddb7ff]" />
+                    ) : imageGenerationError ? (
+                      <AlertCircle className="h-4 w-4 shrink-0 text-rose-300" />
+                    ) : (
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-400" />
+                    )}
+                    <span className="truncate">{imageGenerationStatus}</span>
+                  </div>
+                  {imageGenerationProgress.total > 0 && (
+                    <span className="shrink-0 font-mono text-[11px] text-slate-400">
+                      {imageGenerationProgress.completed}/{imageGenerationProgress.total}
+                    </span>
+                  )}
+                </div>
+                {imageGenerationProgress.total > 0 && (
+                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/30">
+                    <div
+                      className={`h-full transition-all duration-300 ${
+                        imageGenerationError ? 'bg-rose-400' : 'bg-[#ddb7ff]'
+                      }`}
+                      style={{
+                        width: `${(imageGenerationProgress.completed / imageGenerationProgress.total) * 100}%`,
+                      }}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
 
             <div
               ref={previewContainerRef}
@@ -784,6 +954,13 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
 
                   <div className="grid flex-1 gap-5 px-6 pb-6 lg:grid-cols-[1.15fr_0.85fr]">
                     <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(140deg,rgba(18,24,43,0.96),rgba(13,19,38,0.82))] p-6">
+                      {currentActiveScene?.imageUrl && (
+                        <img
+                          src={currentActiveScene.imageUrl}
+                          alt={currentActiveScene.title}
+                          className="absolute inset-0 z-10 h-full w-full object-cover"
+                        />
+                      )}
                       <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-[#ddb7ff]/10 to-transparent" />
                       <div className="relative flex h-full flex-col justify-between">
                         <div>
@@ -862,9 +1039,14 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                   <Layers className="h-3 w-3" />
                   分镜脚本
                 </span>
-                <span className="tracking-wider text-slate-500">
+                <div className="flex min-w-0 items-center gap-3">
+                  {imageGenerationStatus && (
+                    <span className="max-w-[260px] truncate text-[#ddb7ff]">{imageGenerationStatus}</span>
+                  )}
+                  <span className="tracking-wider text-slate-500">
                   共 {activeProject.scenes.length} 个镜头 • 总长 {totalDuration} 秒
-                </span>
+                  </span>
+                </div>
               </div>
 
               {activeProject.scenes.length === 0 ? (
@@ -887,8 +1069,24 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                             : 'border-[#1e293b] bg-[#131b2e]/60 hover:border-[#ddb7ff]/30 hover:bg-[#131b2e]/90'
                         }`}
                       >
-                        <div className="h-24 border-b border-white/5 bg-[linear-gradient(135deg,rgba(221,183,255,0.12),rgba(76,215,246,0.08),rgba(11,19,38,0.9))] p-3">
-                          <div className="flex items-center justify-between">
+                        <div className="relative h-24 overflow-hidden border-b border-white/5 bg-[linear-gradient(135deg,rgba(221,183,255,0.12),rgba(76,215,246,0.08),rgba(11,19,38,0.9))] p-3">
+                          {scene.imageUrl && (
+                            <img
+                              src={scene.imageUrl}
+                              alt={scene.title}
+                              className="absolute inset-0 h-full w-full object-cover"
+                            />
+                          )}
+                          <div className="absolute inset-0 bg-gradient-to-t from-[#050816]/95 via-[#050816]/40 to-[#050816]/25" />
+                          {currentGeneratingSceneNumber === scene.sceneNumber && (
+                            <div className="absolute inset-0 z-10 flex items-center justify-center bg-[#050816]/70">
+                              <div className="flex items-center gap-2 rounded-lg border border-[#ddb7ff]/30 bg-[#131b2e]/90 px-3 py-2 text-[11px] text-[#ddb7ff]">
+                                <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                                正在生成画面
+                              </div>
+                            </div>
+                          )}
+                          <div className="relative flex items-center justify-between">
                             <span className={`text-[10px] font-bold ${isActive ? 'text-[#ddb7ff]' : 'text-slate-300'}`}>
                               SCENE {String(scene.sceneNumber).padStart(2, '0')}
                             </span>
@@ -896,8 +1094,8 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                               {scene.duration}s
                             </span>
                           </div>
-                          <h3 className="mt-3 line-clamp-1 text-sm font-semibold text-white">{scene.title}</h3>
-                          <p className="mt-2 line-clamp-2 text-[11px] leading-5 text-slate-300">{scene.narration}</p>
+                          <h3 className="relative mt-3 line-clamp-1 text-sm font-semibold text-white">{scene.title}</h3>
+                          <p className="relative mt-2 line-clamp-2 text-[11px] leading-5 text-slate-300">{scene.narration}</p>
                         </div>
                         <div className="flex flex-1 flex-col gap-2 p-3">
                           <div className="text-[10px] font-mono uppercase tracking-[0.24em] text-slate-500">

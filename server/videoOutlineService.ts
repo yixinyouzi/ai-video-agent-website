@@ -45,6 +45,8 @@ function buildSystemPrompt(mode: StoryboardProjectMode): string {
   const visualPromptInstruction =
     mode === 'slideshow'
       ? [
+          '所有分镜的 visualPrompt 必须使用简体中文撰写，不得使用英文句子；专业术语也尽量使用中文表达。',
+          'visualPrompt 必须是一段可直接用于文生图模型的中文画面提示词。',
           '当前模式是“图片轮播视频”。',
           '每个分镜的 visualPrompt 必须是图片生成提示词，用于后续文生图。',
           '提示词要描述主体、构图、镜头、光线、风格、环境、材质和氛围。',
@@ -139,9 +141,20 @@ function parseGeneratedOutline(
     throw new Error(`Video outline scene count must be between 6 and 30, received ${outline.scenes.length}.`);
   }
 
+  if (expectedMode === 'slideshow') {
+    const nonChineseScene = outline.scenes.find((scene) => !containsChineseText(scene.visualPrompt));
+    if (nonChineseScene) {
+      throw new Error(`Scene ${nonChineseScene.sceneNumber} image prompt must be written in Chinese.`);
+    }
+  }
+
   const normalizedPrompt = expectedPrompt.trim();
   return {
     ...outline,
     userPrompt: normalizedPrompt || outline.userPrompt,
   };
+}
+
+function containsChineseText(value: string): boolean {
+  return /[\u3400-\u9fff]/.test(value);
 }

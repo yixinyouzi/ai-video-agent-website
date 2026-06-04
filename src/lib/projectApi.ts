@@ -1,4 +1,10 @@
-import { ApiChatMessageRecord, ApiProjectRecord, ApiSendMessageResult, ProjectMode } from '../types';
+import {
+  ApiChatMessageRecord,
+  ApiGenerateStoryboardImageResult,
+  ApiProjectRecord,
+  ApiSendMessageResult,
+  ProjectMode,
+} from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.trim() || '';
 
@@ -73,6 +79,33 @@ export async function sendProjectMessage(input: {
   }
 
   return data as ApiSendMessageResult;
+}
+
+export async function generateStoryboardImage(input: {
+  projectUuid: string;
+  sceneNumber: number;
+  signal?: AbortSignal;
+}): Promise<ApiGenerateStoryboardImageResult> {
+  const response = await fetch(`${API_BASE_URL}/api/projects/${input.projectUuid}/storyboard-images`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ sceneNumber: input.sceneNumber }),
+    signal: input.signal,
+  });
+
+  if (!response.ok) {
+    throw new Error(await getErrorMessage(response, '生成分镜图片失败'));
+  }
+
+  const data = (await response.json()) as Partial<ApiGenerateStoryboardImageResult>;
+
+  if (!data.project || !data.image || typeof data.sceneNumber !== 'number') {
+    throw new Error('服务端没有返回完整的分镜图片信息');
+  }
+
+  return data as ApiGenerateStoryboardImageResult;
 }
 
 async function parseProjectResponse(response: Response): Promise<ApiProjectRecord> {

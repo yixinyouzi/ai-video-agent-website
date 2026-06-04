@@ -114,6 +114,24 @@ export async function updateProjectStoryboardOutline(uuid: string, storyboardOut
   return project;
 }
 
+export async function updateProjectVideoSource(uuid: string, videoSource: string): Promise<ProjectRecord> {
+  const pool = getDbPool();
+
+  await pool.execute<ResultSetHeader>(
+    `UPDATE project
+     SET video_source = ?
+     WHERE uuid = ?`,
+    [videoSource, uuid],
+  );
+
+  const project = await getProjectByUuid(uuid);
+  if (!project) {
+    throw new Error('Project not found after updating video source.');
+  }
+
+  return project;
+}
+
 function mapProjectRow(row: ProjectRow): ProjectRecord {
   const createdAt =
     row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at).toISOString();
