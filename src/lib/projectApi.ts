@@ -85,6 +85,7 @@ export async function sendProjectMessage(input: {
 export async function generateStoryboardImage(input: {
   projectUuid: string;
   sceneNumber: number;
+  force?: boolean;
   signal?: AbortSignal;
 }): Promise<ApiGenerateStoryboardImageResult> {
   const response = await fetch(`${API_BASE_URL}/api/projects/${input.projectUuid}/storyboard-images`, {
@@ -92,7 +93,7 @@ export async function generateStoryboardImage(input: {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ sceneNumber: input.sceneNumber }),
+    body: JSON.stringify({ sceneNumber: input.sceneNumber, force: input.force ?? false }),
     signal: input.signal,
   });
 
@@ -112,6 +113,7 @@ export async function generateStoryboardImage(input: {
 export async function generateStoryboardAudio(input: {
   projectUuid: string;
   sceneNumber: number;
+  force?: boolean;
   signal?: AbortSignal;
 }): Promise<ApiGenerateStoryboardAudioResult> {
   const response = await fetch(`${API_BASE_URL}/api/projects/${input.projectUuid}/storyboard-audio`, {
@@ -119,7 +121,7 @@ export async function generateStoryboardAudio(input: {
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ sceneNumber: input.sceneNumber }),
+    body: JSON.stringify({ sceneNumber: input.sceneNumber, force: input.force ?? false }),
     signal: input.signal,
   });
 

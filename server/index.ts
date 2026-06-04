@@ -132,6 +132,7 @@ app.post('/api/projects/:uuid/storyboard-images', async (req, res) => {
     const result = await generateStoryboardImage({
       project,
       sceneNumber,
+      force: req.body?.force === true,
       signal: abortController.signal,
     });
 
@@ -176,6 +177,7 @@ app.post('/api/projects/:uuid/storyboard-audio', async (req, res) => {
     const result = await generateStoryboardAudio({
       project,
       sceneNumber,
+      force: req.body?.force === true,
       signal: abortController.signal,
     });
     res.status(201).json(result);

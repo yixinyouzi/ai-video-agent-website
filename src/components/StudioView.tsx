@@ -50,6 +50,18 @@ interface StudioViewProps {
 
 const RIGHT_PANEL_MIN_WIDTH = 360;
 const SPLIT_HANDLE_WIDTH = 12;
+const DEFAULT_SCENE_DURATION = 3;
+
+interface SceneTiming {
+  duration: number;
+  startTime: number;
+  endTime: number;
+}
+
+type RegeneratingAsset = {
+  sceneNumber: number;
+  type: 'image' | 'audio';
+};
 
 export default function StudioView({ initialProjectId, initialMode, initialPrompt, onBackToHome }: StudioViewProps) {
   const [projects, setProjects] = useState<Project[]>([]);
@@ -69,6 +81,8 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   const [isPlaying, setIsPlaying] = useState(false);
   const [activeSceneIndex, setActiveSceneIndex] = useState(0);
   const [playbackTime, setPlaybackTime] = useState(0);
+  const [audioDurations, setAudioDurations] = useState<Record<string, number>>({});
+  const [playbackSeekVersion, setPlaybackSeekVersion] = useState(0);
 
   const [inputText, setInputText] = useState('');
   const [isAssistantTyping, setIsAssistantTyping] = useState(false);
@@ -81,6 +95,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   const [currentGenerationPhase, setCurrentGenerationPhase] = useState<'image' | 'audio' | null>(null);
   const [imageGenerationProgress, setImageGenerationProgress] = useState({ completed: 0, total: 0 });
   const [playingAudioSceneNumber, setPlayingAudioSceneNumber] = useState<number | null>(null);
+  const [regeneratingAsset, setRegeneratingAsset] = useState<RegeneratingAsset | null>(null);
 
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [newProjTitle, setNewProjTitle] = useState('');
@@ -95,13 +110,42 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   const playerTimerRef = useRef<ReturnType<typeof window.setInterval> | null>(null);
   const imageGenerationAbortRef = useRef<AbortController | null>(null);
   const narrationAudioRef = useRef<HTMLAudioElement | null>(null);
+  const playbackAudioRef = useRef<HTMLAudioElement | null>(null);
 
   const activeProject = projects.find((project) => project.isActive) || projects[0] || null;
-  const totalDuration = useMemo(
-    () => activeProject?.scenes.reduce((sum, scene) => sum + scene.duration, 0) ?? 0,
-    [activeProject?.scenes],
-  );
+  const sceneTimings = useMemo<SceneTiming[]>(() => {
+    let cursor = 0;
+
+    return (
+      activeProject?.scenes.map((scene) => {
+        const audioDuration = scene.audioUrl ? audioDurations[scene.audioUrl] : null;
+        const duration = audioDuration && Number.isFinite(audioDuration) ? audioDuration : DEFAULT_SCENE_DURATION;
+        const timing = {
+          duration,
+          startTime: cursor,
+          endTime: cursor + duration,
+        };
+        cursor = timing.endTime;
+        return timing;
+      }) ?? []
+    );
+  }, [activeProject?.scenes, audioDurations]);
+  const totalDuration = sceneTimings.at(-1)?.endTime ?? 0;
   const currentActiveScene = activeProject?.scenes[activeSceneIndex] || null;
+  const currentSceneTiming = sceneTimings[activeSceneIndex] || null;
+  const currentSceneProgress = currentSceneTiming
+    ? Math.min(1, Math.max(0, (playbackTime - currentSceneTiming.startTime) / currentSceneTiming.duration))
+    : 0;
+  const currentCaption = useMemo(() => {
+    if (!currentActiveScene) {
+      return '';
+    }
+
+    const captions = splitNarrationIntoCaptions(currentActiveScene.narration);
+    return captions.find((caption) => currentSceneProgress >= caption.startRatio && currentSceneProgress < caption.endRatio)?.text
+      ?? captions.at(-1)?.text
+      ?? '';
+  }, [currentActiveScene, currentSceneProgress]);
   const canGenerateStoryboardImages = Boolean(
     activeProject?.mode === 'slideshow' && activeProject.outline && activeProject.scenes.length > 0,
   );
@@ -120,6 +164,33 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
 
     void loadMessages(activeProjectId);
   }, [activeProjectId]);
+
+  useEffect(() => {
+    const audioUrls = activeProject?.scenes.flatMap((scene) => (scene.audioUrl ? [scene.audioUrl] : [])) ?? [];
+    const pendingUrls = audioUrls.filter((url) => audioDurations[url] === undefined);
+    const audioElements = pendingUrls.map((url) => {
+      const audio = new Audio();
+      const saveDuration = () => {
+        setAudioDurations((currentDurations) => ({
+          ...currentDurations,
+          [url]: Number.isFinite(audio.duration) && audio.duration > 0 ? audio.duration : DEFAULT_SCENE_DURATION,
+        }));
+      };
+
+      audio.preload = 'metadata';
+      audio.addEventListener('loadedmetadata', saveDuration, { once: true });
+      audio.addEventListener('error', saveDuration, { once: true });
+      audio.src = url;
+      return audio;
+    });
+
+    return () => {
+      audioElements.forEach((audio) => {
+        audio.removeAttribute('src');
+        audio.load();
+      });
+    };
+  }, [activeProject?.scenes, audioDurations]);
 
   useEffect(() => {
     if (!messageListRef.current) {
@@ -168,18 +239,41 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
       return;
     }
 
-    let accumulatedTime = 0;
     for (let index = 0; index < activeProject.scenes.length; index += 1) {
-      const scene = activeProject.scenes[index];
-      if (playbackTime >= accumulatedTime && playbackTime < accumulatedTime + scene.duration) {
+      const timing = sceneTimings[index];
+      if (playbackTime >= timing.startTime && playbackTime < timing.endTime) {
         setActiveSceneIndex(index);
         return;
       }
-      accumulatedTime += scene.duration;
     }
 
     setActiveSceneIndex(Math.max(0, activeProject.scenes.length - 1));
-  }, [activeProject, playbackTime]);
+  }, [activeProject, playbackTime, sceneTimings]);
+
+  useEffect(() => {
+    playbackAudioRef.current?.pause();
+    playbackAudioRef.current = null;
+
+    if (!isPlaying || !currentActiveScene?.audioUrl || !currentSceneTiming) {
+      return;
+    }
+
+    const audio = new Audio(currentActiveScene.audioUrl);
+    playbackAudioRef.current = audio;
+    audio.currentTime = Math.max(0, playbackTime - currentSceneTiming.startTime);
+    void audio.play().catch((error) => {
+      console.error('[storyboard-playback] Narration playback failed', error);
+    });
+
+    return () => {
+      audio.pause();
+      if (playbackAudioRef.current === audio) {
+        playbackAudioRef.current = null;
+      }
+    };
+    // Playback audio should restart only when playback or the active scene changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSceneIndex, isPlaying, playbackSeekVersion]);
 
   useEffect(() => {
     const handleFullscreenChange = () => {
@@ -290,7 +384,36 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
     }
 
     setActiveSceneIndex(index);
-    setPlaybackTime(activeProject.scenes[index].startTime);
+    setPlaybackTime(sceneTimings[index]?.startTime ?? 0);
+  };
+
+  const togglePlayback = () => {
+    if (!activeProject || activeProject.scenes.length === 0) {
+      return;
+    }
+
+    if (isPlaying) {
+      setIsPlaying(false);
+      return;
+    }
+
+    if (playbackTime >= totalDuration) {
+      setPlaybackTime(0);
+      setActiveSceneIndex(0);
+    }
+    setIsPlaying(true);
+  };
+
+  const handleProgressClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (!activeProject || activeProject.scenes.length === 0 || totalDuration <= 0) {
+      return;
+    }
+
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const progress = Math.min(1, Math.max(0, (event.clientX - bounds.left) / bounds.width));
+    setPlaybackTime(progress * totalDuration);
+    setPlaybackSeekVersion((currentVersion) => currentVersion + 1);
+    setIsPlaying(true);
   };
 
   const handleNarrationAudioClick = (sceneNumber: number, audioUrl: string, event: React.MouseEvent) => {
@@ -425,6 +548,32 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
   const handleStopStoryboardImageGeneration = () => {
     imageGenerationAbortRef.current?.abort();
     setImageGenerationStatus('正在中断生成...');
+  };
+
+  const handleRegenerateSceneAsset = async (sceneNumber: number, type: 'image' | 'audio') => {
+    if (!activeProject || regeneratingAsset || isGeneratingImages) {
+      return;
+    }
+
+    setRegeneratingAsset({ sceneNumber, type });
+    try {
+      const result = type === 'image'
+        ? await generateStoryboardImage({
+            projectUuid: activeProject.id,
+            sceneNumber,
+            force: true,
+          })
+        : await generateStoryboardAudio({
+            projectUuid: activeProject.id,
+            sceneNumber,
+            force: true,
+          });
+      applyGeneratedProjectRecord(activeProject.id, result.project);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : type === 'image' ? '重新生成画面失败' : '重新生成旁白失败');
+    } finally {
+      setRegeneratingAsset(null);
+    }
   };
 
   const selectProject = (projectId: string) => {
@@ -979,119 +1128,95 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                   </div>
                 </div>
               ) : (
-                <div className="relative flex h-full flex-col bg-[radial-gradient(circle_at_top,_rgba(221,183,255,0.18),_transparent_36%),linear-gradient(135deg,#0b1326_0%,#060e20_55%,#111827_100%)]">
-                  <div className="flex items-start justify-between gap-6 p-6">
-                    <div className="min-w-0">
-                      <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[10px] font-mono uppercase tracking-[0.24em] text-slate-300">
-                        <span>{activeProject.mode === 'slideshow' ? 'Image Prompt Scene' : 'HTML Motion Scene'}</span>
-                      </div>
-                      <h3 className="text-2xl font-bold tracking-tight text-white">
-                        Scene {String(currentActiveScene?.sceneNumber ?? 0).padStart(2, '0')} · {currentActiveScene?.title}
-                      </h3>
-                      <p className="mt-3 max-w-3xl select-text whitespace-pre-wrap text-sm leading-7 text-slate-300">
-                        {currentActiveScene?.narration}
+                <div className="relative h-full overflow-hidden bg-[#050816]">
+                  {activeProject.scenes.map((scene, index) =>
+                    scene.imageUrl ? (
+                      <img
+                        key={scene.id}
+                        src={scene.imageUrl}
+                        alt={scene.title}
+                        className="absolute inset-0 h-full w-full object-cover"
+                        style={{
+                          opacity: index === activeSceneIndex ? 1 : 0,
+                          transform: `scale(${index === activeSceneIndex ? 1 + currentSceneProgress * 0.08 : 1})`,
+                          transition: 'opacity 1000ms ease-in-out, transform 200ms linear',
+                        }}
+                      />
+                    ) : null,
+                  )}
+
+                  {!currentActiveScene?.imageUrl && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(221,183,255,0.18),_transparent_42%),linear-gradient(135deg,#0b1326,#060e20)] px-8 text-center">
+                      <Sparkles className="mb-4 h-8 w-8 text-[#ddb7ff]" />
+                      <p className="text-base font-semibold text-white">当前分镜画面尚未生成</p>
+                      <p className="mt-3 max-w-2xl select-text whitespace-pre-wrap text-sm leading-7 text-slate-400">
+                        {currentActiveScene?.visualPrompt}
                       </p>
-                    </div>
-
-                    <button
-                      onClick={() => {
-                        if (activeProject.scenes.length === 0) {
-                          return;
-                        }
-
-                        if (isPlaying) {
-                          setIsPlaying(false);
-                          return;
-                        }
-
-                        if (playbackTime >= totalDuration) {
-                          setPlaybackTime(0);
-                          setActiveSceneIndex(0);
-                        }
-                        setIsPlaying(true);
-                      }}
-                      className="flex h-14 w-14 shrink-0 cursor-pointer items-center justify-center rounded-full border border-[#ddb7ff]/20 bg-[#171f33]/90 text-[#ddb7ff] shadow-[0_0_20px_rgba(221,183,255,0.2)] transition-all hover:scale-105"
-                    >
-                      {isPlaying ? <Pause className="h-6 w-6 fill-current" /> : <Play className="h-6 w-6 fill-current translate-x-0.5" />}
-                    </button>
-                  </div>
-
-                  <div className="grid flex-1 gap-5 px-6 pb-6 lg:grid-cols-[1.15fr_0.85fr]">
-                    <div className="relative overflow-hidden rounded-2xl border border-white/10 bg-[linear-gradient(140deg,rgba(18,24,43,0.96),rgba(13,19,38,0.82))] p-6">
-                      {currentActiveScene?.imageUrl && (
-                        <img
-                          src={currentActiveScene.imageUrl}
-                          alt={currentActiveScene.title}
-                          className="absolute inset-0 z-10 h-full w-full object-cover"
-                        />
-                      )}
-                      <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-[#ddb7ff]/10 to-transparent" />
-                      <div className="relative flex h-full flex-col justify-between">
-                        <div>
-                          <div className="mb-3 text-xs font-mono uppercase tracking-[0.24em] text-[#ddb7ff]">画面预览预留区</div>
-                          <div className="rounded-2xl border border-dashed border-[#ddb7ff]/25 bg-[#0b1326]/70 p-6">
-                            <p className="text-sm font-semibold text-white">
-                              {activeProject.mode === 'slideshow' ? '后续将在这里展示 AI 生成的分镜图片' : '后续将在这里展示 AI 生成的网页动画'}
-                            </p>
-                            <p className="mt-3 select-text whitespace-pre-wrap text-sm leading-7 text-slate-300">
-                              {currentActiveScene?.visualPrompt}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="mt-6 flex items-center justify-between text-xs text-slate-400">
-                          <span>{activeProject.scenes.length} 个分镜</span>
-                          <span>总时长 {totalDuration} 秒</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex flex-col gap-4">
-                      <div className="rounded-2xl border border-white/10 bg-[#131b2e]/88 p-5">
-                        <div className="mb-2 text-xs font-mono uppercase tracking-[0.24em] text-[#4cd7f6]">当前镜头信息</div>
-                        <div className="space-y-3 text-sm text-slate-300">
-                          <div>
-                            <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">镜头时长</div>
-                            <div className="mt-1 font-semibold text-white">{currentActiveScene?.duration} 秒</div>
-                          </div>
-                          <div>
-                            <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">镜头区间</div>
-                            <div className="mt-1 font-semibold text-white">
-                              00:{String(currentActiveScene?.startTime ?? 0).padStart(2, '0')} - 00:
-                              {String(currentActiveScene?.endTime ?? 0).padStart(2, '0')}
-                            </div>
-                          </div>
-                          <div>
-                            <div className="text-[11px] uppercase tracking-[0.18em] text-slate-500">模式</div>
-                            <div className="mt-1 font-semibold text-white">
-                              {activeProject.mode === 'slideshow' ? '图片生成提示词' : 'HTML 动画提示词'}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex-1 rounded-2xl border border-white/10 bg-[#0b1326]/75 p-5">
-                        <div className="mb-2 text-xs font-mono uppercase tracking-[0.24em] text-[#ddb7ff]">项目概要</div>
-                        <p className="select-text whitespace-pre-wrap text-sm leading-7 text-slate-300">
-                          {activeProject.outline?.summary || '生成后将在这里展示整支视频的叙事概要。'}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {isCaptionsOn && currentActiveScene && (
-                    <div className="pointer-events-none absolute bottom-7 left-1/2 z-10 w-[min(88%,760px)] -translate-x-1/2">
-                      <div className="rounded-2xl border border-white/10 bg-black/55 px-5 py-3 text-center text-sm leading-7 text-white backdrop-blur-sm">
-                        <span className="select-text">{currentActiveScene.narration}</span>
-                      </div>
                     </div>
                   )}
 
-                  <div className="absolute left-0 right-0 bottom-0 h-1 bg-white/10">
+                  <div className="pointer-events-none absolute inset-x-0 top-0 h-28 bg-gradient-to-b from-black/70 to-transparent" />
+                  <div className="pointer-events-none absolute inset-x-0 bottom-0 h-40 bg-gradient-to-t from-black/80 to-transparent" />
+
+                  <div className="absolute left-5 top-5 rounded-xl border border-white/10 bg-black/45 px-4 py-2 backdrop-blur-md">
+                    <div className="text-[10px] font-mono uppercase tracking-[0.24em] text-[#ddb7ff]">
+                      Scene {String(currentActiveScene?.sceneNumber ?? 0).padStart(2, '0')}
+                    </div>
+                    <div className="mt-1 text-sm font-semibold text-white">{currentActiveScene?.title}</div>
+                  </div>
+
+                  <button
+                    onClick={togglePlayback}
+                    className={`absolute left-1/2 top-1/2 flex -translate-x-1/2 -translate-y-1/2 cursor-pointer items-center justify-center rounded-full border border-white/25 bg-black/40 text-white shadow-[0_0_30px_rgba(0,0,0,0.35)] backdrop-blur-md transition-all hover:scale-105 hover:bg-black/55 ${
+                      isPlaying ? 'h-12 w-12 opacity-0 hover:opacity-100' : 'h-16 w-16'
+                    }`}
+                    title={isPlaying ? '暂停' : '播放'}
+                  >
+                    {isPlaying ? <Pause className="h-5 w-5 fill-current" /> : <Play className="h-7 w-7 fill-current translate-x-0.5" />}
+                  </button>
+
+                  {isCaptionsOn && currentCaption && (
+                    <div className="pointer-events-none absolute bottom-16 left-1/2 z-10 w-[min(88%,760px)] -translate-x-1/2 text-center">
+                      <span
+                        className="select-text text-xl font-semibold leading-relaxed text-white"
+                        style={{ textShadow: '0 2px 5px rgba(0,0,0,0.95), 0 0 12px rgba(0,0,0,0.85)' }}
+                      >
+                        {currentCaption}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="absolute inset-x-0 bottom-0 z-20 flex h-11 items-center gap-3 border-t border-white/10 bg-[#060e20]/90 px-4 backdrop-blur-md">
+                    <button
+                      type="button"
+                      onClick={togglePlayback}
+                      className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full bg-white/10 text-white transition hover:bg-[#ddb7ff]/20 hover:text-[#ddb7ff]"
+                      title={isPlaying ? '暂停' : '播放'}
+                    >
+                      {isPlaying ? <Pause className="h-3.5 w-3.5 fill-current" /> : <Play className="h-3.5 w-3.5 fill-current translate-x-px" />}
+                    </button>
                     <div
-                      className="h-full bg-gradient-to-r from-[#ddb7ff] to-[#4cd7f6] transition-all duration-100"
-                      style={{ width: `${totalDuration > 0 ? (playbackTime / totalDuration) * 100 : 0}%` }}
-                    />
+                      className="group relative h-5 flex-1 cursor-pointer"
+                      onClick={handleProgressClick}
+                      role="progressbar"
+                      aria-valuemin={0}
+                      aria-valuemax={totalDuration}
+                      aria-valuenow={playbackTime}
+                    >
+                      <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 overflow-hidden rounded-full bg-white/15">
+                        <div
+                          className="h-full bg-gradient-to-r from-[#ddb7ff] to-[#4cd7f6]"
+                          style={{ width: `${totalDuration > 0 ? (playbackTime / totalDuration) * 100 : 0}%` }}
+                        />
+                      </div>
+                      <div
+                        className="absolute top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white opacity-0 shadow transition-opacity group-hover:opacity-100"
+                        style={{ left: `${totalDuration > 0 ? (playbackTime / totalDuration) * 100 : 0}%` }}
+                      />
+                    </div>
+                    <span className="shrink-0 font-mono text-[11px] text-slate-300">
+                      {formatTime(playbackTime)}/{formatTime(totalDuration)}
+                    </span>
                   </div>
                 </div>
               )}
@@ -1108,7 +1233,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                     <span className="max-w-[260px] truncate text-[#ddb7ff]">{imageGenerationStatus}</span>
                   )}
                   <span className="tracking-wider text-slate-500">
-                  共 {activeProject.scenes.length} 个镜头 • 总长 {totalDuration} 秒
+                    {formatTime(playbackTime)}/{formatTime(totalDuration)}
                   </span>
                 </div>
               </div>
@@ -1163,7 +1288,7 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                             </span>
                             <div className="flex items-center gap-1.5">
                               <span className="rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-[9px] font-mono uppercase tracking-wider text-slate-300">
-                                {scene.duration}s
+                                {formatTime(sceneTimings[index]?.duration ?? DEFAULT_SCENE_DURATION)}
                               </span>
                               <button
                                 type="button"
@@ -1410,14 +1535,40 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
               </div>
 
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-                {expandedOutline.scenes.map((scene) => (
-                  <div key={scene.sceneNumber} className="overflow-hidden rounded-2xl border border-[#1e293b] bg-[#101827]">
-                    <div className="border-b border-white/5 bg-[linear-gradient(135deg,rgba(221,183,255,0.12),rgba(76,215,246,0.08),rgba(11,19,38,0.9))] p-4">
-                      <div className="text-[10px] font-mono uppercase tracking-[0.24em] text-[#ddb7ff]">
-                        Scene {String(scene.sceneNumber).padStart(2, '0')}
+                {expandedOutline.scenes.map((scene) => {
+                  const projectScene = activeProject.scenes.find((item) => item.sceneNumber === scene.sceneNumber);
+                  const isRegeneratingImage = regeneratingAsset?.sceneNumber === scene.sceneNumber && regeneratingAsset.type === 'image';
+                  const isRegeneratingAudio = regeneratingAsset?.sceneNumber === scene.sceneNumber && regeneratingAsset.type === 'audio';
+
+                  return (
+                    <div key={scene.sceneNumber} className="overflow-hidden rounded-2xl border border-[#1e293b] bg-[#101827]">
+                    <div className="relative h-44 overflow-hidden border-b border-white/5 bg-[linear-gradient(135deg,rgba(221,183,255,0.12),rgba(76,215,246,0.08),rgba(11,19,38,0.9))] p-4">
+                      {projectScene?.imageUrl && (
+                        <img src={projectScene.imageUrl} alt={scene.title} className="absolute inset-0 h-full w-full object-cover" />
+                      )}
+                      <div className="absolute inset-0 bg-gradient-to-t from-[#050816]/95 via-[#050816]/35 to-[#050816]/25" />
+                      <div className="relative flex items-center justify-between">
+                        <div className="text-[10px] font-mono uppercase tracking-[0.24em] text-[#ddb7ff]">
+                          Scene {String(scene.sceneNumber).padStart(2, '0')}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!projectScene?.audioUrl}
+                          onClick={(event) => projectScene?.audioUrl && handleNarrationAudioClick(scene.sceneNumber, projectScene.audioUrl, event)}
+                          className={`flex h-8 w-8 items-center justify-center rounded-lg border bg-black/45 transition ${
+                            projectScene?.audioUrl
+                              ? 'cursor-pointer border-orange-400/50 text-orange-300 hover:bg-orange-400/20'
+                              : 'cursor-not-allowed border-white/10 text-slate-500'
+                          }`}
+                          title={projectScene?.audioUrl ? '播放当前分镜音频' : '当前分镜音频尚未生成'}
+                        >
+                          <Volume2 className={`h-4 w-4 ${playingAudioSceneNumber === scene.sceneNumber ? 'animate-pulse' : ''}`} />
+                        </button>
                       </div>
-                      <h4 className="mt-2 text-base font-semibold text-white">{scene.title}</h4>
-                      <p className="mt-1 text-xs text-slate-400">预览位预留，后续将展示真实分镜画面</p>
+                      <div className="absolute inset-x-4 bottom-4">
+                        <h4 className="text-base font-semibold text-white">{scene.title}</h4>
+                        <p className="mt-1 text-xs text-slate-300">{projectScene?.imageUrl ? '当前分镜画面' : '当前分镜画面尚未生成'}</p>
+                      </div>
                     </div>
                     <div className="space-y-4 p-4">
                       <div>
@@ -1431,9 +1582,30 @@ export default function StudioView({ initialProjectId, initialMode, initialPromp
                         <p className="mt-2 select-text whitespace-pre-wrap text-sm leading-7 text-slate-300">{scene.visualPrompt}</p>
                       </div>
                       <div className="text-xs text-slate-500">建议时长：{scene.durationSeconds} 秒</div>
+                      <div className="grid grid-cols-2 gap-2 border-t border-white/5 pt-4">
+                        <button
+                          type="button"
+                          disabled={Boolean(regeneratingAsset) || isGeneratingImages}
+                          onClick={() => void handleRegenerateSceneAsset(scene.sceneNumber, 'image')}
+                          className="flex items-center justify-center gap-1.5 rounded-lg border border-[#ddb7ff]/30 bg-[#ddb7ff]/10 px-3 py-2 text-xs text-[#ddb7ff] transition hover:bg-[#ddb7ff]/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <RefreshCw className={`h-3.5 w-3.5 ${isRegeneratingImage ? 'animate-spin' : ''}`} />
+                          {isRegeneratingImage ? '生成中' : '重新生成画面'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!projectScene?.imageUrl || Boolean(regeneratingAsset) || isGeneratingImages}
+                          onClick={() => void handleRegenerateSceneAsset(scene.sceneNumber, 'audio')}
+                          className="flex items-center justify-center gap-1.5 rounded-lg border border-orange-400/30 bg-orange-400/10 px-3 py-2 text-xs text-orange-300 transition hover:bg-orange-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <RefreshCw className={`h-3.5 w-3.5 ${isRegeneratingAudio ? 'animate-spin' : ''}`} />
+                          {isRegeneratingAudio ? '生成中' : '重新生成旁白'}
+                        </button>
+                      </div>
                     </div>
-                  </div>
-                ))}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
@@ -1613,4 +1785,37 @@ function clampRightPanelWidth(nextWidth: number, container: HTMLDivElement | nul
   const maxWidth = Math.max(240, Math.floor((containerWidth - SPLIT_HANDLE_WIDTH) / 2));
   const minWidth = Math.min(RIGHT_PANEL_MIN_WIDTH, maxWidth);
   return Math.min(maxWidth, Math.max(minWidth, Math.round(nextWidth)));
+}
+
+function formatTime(seconds: number): string {
+  const wholeSeconds = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(wholeSeconds / 60);
+  const remainingSeconds = wholeSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+}
+
+function splitNarrationIntoCaptions(narration: string): Array<{ text: string; startRatio: number; endRatio: number }> {
+  const parts = narration
+    .split(/[，,。.!！?？；;：:\n]+/)
+    .flatMap((part) => {
+      const text = part.trim().replace(/^[“”"'‘’、\s]+|[“”"'‘’、\s]+$/g, '');
+      return text.length > 20 ? text.match(/.{1,20}/g) ?? [] : [text];
+    })
+    .filter(Boolean);
+  const weightedParts = parts.map((text) => ({
+    text,
+    weight: Math.max(1, text.replace(/[\s\p{P}\p{S}]/gu, '').length),
+  }));
+  const totalWeight = weightedParts.reduce((sum, part) => sum + part.weight, 0);
+  let cursor = 0;
+
+  return weightedParts.map((part, index) => {
+    const startRatio = cursor / totalWeight;
+    cursor += part.weight;
+    return {
+      text: part.text,
+      startRatio,
+      endRatio: index === weightedParts.length - 1 ? 1 : cursor / totalWeight,
+    };
+  });
 }

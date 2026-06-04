@@ -39,6 +39,7 @@ const MEDIA_ROOT_DIR = path.resolve(process.cwd(), 'project-images');
 export async function generateStoryboardAudio(input: {
   project: ProjectRecord;
   sceneNumber: number;
+  force?: boolean;
   signal?: AbortSignal;
 }): Promise<GenerateStoryboardAudioResult> {
   const logPrefix = `[storyboard-audio] project=${input.project.uuid} scene=${input.sceneNumber}`;
@@ -55,7 +56,7 @@ export async function generateStoryboardAudio(input: {
   if (!sceneSource.path || !sceneSource.url) {
     throw new Error(`Scene ${input.sceneNumber} image must be generated before narration audio.`);
   }
-  if (sceneSource.audio?.path && sceneSource.audio?.url) {
+  if (!input.force && sceneSource.audio?.path && sceneSource.audio?.url) {
     console.log(`${logPrefix} Skipped because narration audio already exists`);
     return {
       project: input.project,

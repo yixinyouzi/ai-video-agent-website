@@ -55,6 +55,7 @@ const IMAGE_ROOT_DIR = path.resolve(process.cwd(), 'project-images');
 export async function generateStoryboardImage(input: {
   project: ProjectRecord;
   sceneNumber: number;
+  force?: boolean;
   signal?: AbortSignal;
 }): Promise<GenerateStoryboardImageResult> {
   const logPrefix = `[storyboard-image] project=${input.project.uuid} scene=${input.sceneNumber}`;
@@ -77,7 +78,7 @@ export async function generateStoryboardImage(input: {
 
   const videoSource = parseProjectVideoSource(input.project.videoSource);
   const existingImage = videoSource.scenes[String(input.sceneNumber)];
-  if (existingImage?.path && existingImage?.url) {
+  if (!input.force && existingImage?.path && existingImage?.url) {
     console.log(`${logPrefix} Skipped because an image already exists`);
     return {
       project: input.project,
